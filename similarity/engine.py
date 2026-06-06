@@ -7,7 +7,12 @@ import numpy as np
 _id_to_index: Optional[dict] = None
 _index_to_id: Optional[list] = None
 _features: Optional[np.ndarray] = None
+_prices: Optional[np.ndarray] = None   # sales_price per row index, NaN if missing
 _hnsw_index = None
+
+# Products whose price differs by more than this multiplier are filtered out.
+# e.g. factor=3 means a $500 watch only returns results between ~$167 and $1500.
+_PRICE_BAND_FACTOR = 3.0
 
 
 def initialize(data_path: str) -> None:
@@ -15,7 +20,7 @@ def initialize(data_path: str) -> None:
     Load data, build feature vectors, and build the HNSW index.
     Must be called once before any calls to find_similar_products().
     """
-    global _id_to_index, _index_to_id, _features, _hnsw_index
+    global _id_to_index, _index_to_id, _features, _prices, _hnsw_index
 
     from similarity.data_loader import load_products
     from similarity.feature_builder import FeatureBuilder
@@ -24,6 +29,10 @@ def initialize(data_path: str) -> None:
     print(f"Loading products from {data_path}...")
     df, _id_to_index, _index_to_id = load_products(data_path)
     print(f"Loaded {len(df)} products.")
+
+    # Keep a price array for post-retrieval price band filtering.
+    # NaN means price is unknown — those products are never filtered out.
+    _prices = df["sales_price"].values.astype(float)
 
     print("Building feature vectors (TF-IDF + TruncatedSVD + numerics)...")
     builder = FeatureBuilder()
@@ -61,12 +70,48 @@ def find_similar_products(product_id: str, num_similar: int) -> list:
 
     query_row_index = _id_to_index[product_id]
     query_vector = _features[query_row_index]
+    query_price = _prices[query_row_index]
 
-    neighbor_indices = _hnsw_index.query(
+    # Fetch more candidates than needed so we still have num_similar results
+    # after the price band filter removes cross-segment noise.
+    candidates = _hnsw_index.query(
         vector=query_vector,
-        k=num_similar,
+        k=num_similar * 5,
         exclude_index=query_row_index
     )
 
-    similar_ids = [_index_to_id[i] for i in neighbor_indices]
+    filtered = _filter_by_price_band(candidates, query_price)
+
+    # Fall back to unfiltered results if price is unknown or too few survive
+    if len(filtered) < num_similar:
+        filtered = candidates
+
+    similar_ids = [_index_to_id[i] for i in filtered[:num_similar]]
     return similar_ids
+
+
+def _filter_by_price_band(candidate_indices: list, query_price: float) -> list:
+    """
+    Remove candidates whose price is more than _PRICE_BAND_FACTOR times
+    higher or lower than the query product's price.
+
+    A $500 watch with factor=3 keeps results in the ~$167–$1500 range,
+    preventing a $15 plastic watch from ranking above a $450 leather one
+    just because they share the words 'black' and 'watch'.
+
+    Products with unknown price (NaN) are always kept.
+    If the query product itself has no price, filtering is skipped entirely.
+    """
+    if np.isnan(query_price):
+        return candidate_indices
+
+    result = []
+    for row_index in candidate_indices:
+        candidate_price = _prices[row_index]
+        if np.isnan(candidate_price):
+            result.append(row_index)
+            continue
+        ratio = candidate_price / query_price
+        if (1.0 / _PRICE_BAND_FACTOR) <= ratio <= _PRICE_BAND_FACTOR:
+            result.append(row_index)
+    return result

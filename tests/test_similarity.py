@@ -132,6 +132,25 @@ class TestEngine:
         import similarity.engine as engine
         assert engine.product_count() == len(df)
 
+    def test_price_band_filter_removes_cross_segment_results(self, df, id_to_index):
+        import similarity.engine as engine
+
+        # Find a product with a known price so we can check the filter works
+        priced = df[df["sales_price"].notna()].iloc[0]
+        query_id = priced["uniq_id"]
+        query_price = priced["sales_price"]
+
+        results = engine.find_similar_products(query_id, num_similar=10)
+
+        for result_id in results:
+            result_price = df.loc[id_to_index[result_id], "sales_price"]
+            if result_price is None or (isinstance(result_price, float) and np.isnan(result_price)):
+                continue  # unknown price — always allowed through
+            ratio = result_price / query_price
+            assert (1.0 / 3.0) <= ratio <= 3.0, (
+                f"Price band violated: query={query_price}, result={result_price}, ratio={ratio:.2f}"
+            )
+
 
 class TestAPI:
 
