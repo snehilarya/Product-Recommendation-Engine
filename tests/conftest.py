@@ -3,20 +3,18 @@ import similarity.engine as engine
 from similarity.data_loader import load_products
 from similarity.feature_builder import FeatureBuilder
 from similarity.index import SimilarityIndex
-
-DATA_PATH = (
-    "/Users/I524718/CodeBase/sap-cxii-tech-ex-01/data/"
-    "marketing_sample_for_amazon_com-amazon_fashion_products.ldjson"
-)
+from similarity.config import settings # <-- We import our shiny new settings!
 
 @pytest.fixture(scope="session", autouse=True)
 def init_engine():
     """Initialize the engine once for the entire test session."""
-    engine.initialize(DATA_PATH)
+    # Use the dynamic settings path!
+    engine.initialize(settings.DATA_PATH)
 
 @pytest.fixture(scope="session")
 def loaded_data():
-    df, id_to_index, index_to_id = load_products(DATA_PATH)
+    # Use the dynamic settings path!
+    df, id_to_index, index_to_id = load_products(settings.DATA_PATH)
     return df, id_to_index, index_to_id
 
 @pytest.fixture(scope="session")

@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  recommendation-engine:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      # Automatically maps to your Pydantic Settings
+      - DATA_PATH=/app/data/marketing_sample_for_amazon_com-amazon_fashion_products.ldjson
+      - PRICE_TOLERANCE_LOWER=0.5
+      - PRICE_TOLERANCE_UPPER=2.0
