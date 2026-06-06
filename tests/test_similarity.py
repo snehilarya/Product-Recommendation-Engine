@@ -34,13 +34,24 @@ class TestDataLoader:
         assert df["brand"].isna().sum() == 0
         assert df["colour"].isna().sum() == 0
 
+    def test_bestsellers_rank_extracted(self, df):
+        # 83% of products have a rank in product_details — spot-check it's numeric
+        filled = df["bestsellers_rank"].dropna()
+        assert len(filled) > 20000
+        assert filled.min() >= 1
+
+    def test_child_category_extracted(self, df):
+        filled = df["child_category"].dropna()
+        assert len(filled) > 20000
+        assert filled.iloc[0].isidentifier() or len(filled.iloc[0]) > 3
+
 
 class TestFeatureBuilder:
 
     def test_output_shape_is_correct(self, df, built_features):
         from similarity.config import settings
         feature_matrix, builder = built_features
-        expected_dims = settings.SVD_COMPONENTS + 2  # text dims + price + rating
+        expected_dims = settings.SVD_COMPONENTS + 3  # text dims + price + rating + bsr
         assert feature_matrix.shape == (len(df), expected_dims)
 
     def test_output_dtype_is_float32(self, df, built_features):

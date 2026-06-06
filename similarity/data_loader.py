@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Optional
 
 import pandas as pd
@@ -40,6 +41,8 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
     df["weight"] = df["weight"].apply(_parse_weight)
     df["sales_price"] = df["sales_price"].apply(_parse_price)
     df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
+    df["bestsellers_rank"] = df["product_details__k_v_pairs"].apply(_extract_rank)
+    df["child_category"] = df["parent___child_category__all"].apply(_extract_child_category)
 
     # TF-IDF concatenation requires string — nulls become empty string
     text_columns = ["product_name", "brand", "colour", "other_items_customers_buy"]
@@ -78,3 +81,24 @@ def _parse_price(value) -> Optional[float]:
         return float(str(value).replace(",", "").strip())
     except ValueError:
         return None
+
+
+def _extract_rank(details) -> Optional[int]:
+    """Pull the overall Amazon bestsellers rank from product_details dict."""
+    if not isinstance(details, dict):
+        return None
+    raw = details.get("Amazon_Bestsellers_Rank", "")
+    match = re.search(r"#([\d,]+)", str(raw))
+    if match:
+        try:
+            return int(match.group(1).replace(",", ""))
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_child_category(categories) -> Optional[str]:
+    """Return the most-specific (last) key from the category dict."""
+    if not isinstance(categories, dict) or not categories:
+        return None
+    return list(categories.keys())[-1]
