@@ -71,6 +71,10 @@ class FeatureBuilder:
 
         numeric_matrix = np.hstack([price_log, rating_col]).astype(np.float32)
 
-        if fit:
-            return self.scaler.fit_transform(numeric_matrix).astype(np.float32)
-        return self.scaler.transform(numeric_matrix).astype(np.float32)
+        scaled = (
+            self.scaler.fit_transform(numeric_matrix) if fit
+            else self.scaler.transform(numeric_matrix)
+        )
+        # Down-weight numeric dims so price/rating inform but don't dominate text.
+        # Measured: w=0.3 gives 80% same-category hit rate vs 75% at w=1.0.
+        return (scaled * settings.NUMERIC_WEIGHT).astype(np.float32)

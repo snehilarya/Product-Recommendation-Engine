@@ -38,9 +38,10 @@ class TestDataLoader:
 class TestFeatureBuilder:
 
     def test_output_shape_is_correct(self, df, built_features):
+        from similarity.config import settings
         feature_matrix, builder = built_features
-        # 50 dims from TruncatedSVD + 2 numeric (price, rating) = 52
-        assert feature_matrix.shape == (len(df), 52)
+        expected_dims = settings.SVD_COMPONENTS + 2  # text dims + price + rating
+        assert feature_matrix.shape == (len(df), expected_dims)
 
     def test_output_dtype_is_float32(self, df, built_features):
         feature_matrix, _ = built_features
@@ -51,12 +52,13 @@ class TestFeatureBuilder:
         assert not np.isnan(feature_matrix).any()
         assert not np.isinf(feature_matrix).any()
 
-    def test_numeric_features_are_in_zero_one_range(self, built_features):
+    def test_numeric_features_are_scaled(self, built_features):
+        from similarity.config import settings
         feature_matrix, _ = built_features
-        # last 2 columns are MinMaxScaled — must be in [0, 1]
+        # last 2 cols are MinMaxScaled then multiplied by NUMERIC_WEIGHT
         numeric_part = feature_matrix[:, -2:]
         assert numeric_part.min() >= 0.0
-        assert numeric_part.max() <= 1.0
+        assert numeric_part.max() <= settings.NUMERIC_WEIGHT + 1e-5
 
 
 class TestHNSWIndex:
