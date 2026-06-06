@@ -1,6 +1,8 @@
 import numpy as np
 import hnswlib
 
+from similarity.config import settings
+
 
 class SimilarityIndex:
     """
@@ -16,11 +18,11 @@ class SimilarityIndex:
         self.index = hnswlib.Index(space="cosine", dim=dim)
         self.index.init_index(
             max_elements=max_elements,
-            M=16,                # links per node — controls graph connectivity
-            ef_construction=200, # beam width at build time — higher = better recall
+            M=settings.HNSW_M,                       # links per node — controls graph connectivity
+            ef_construction=settings.HNSW_EF_CONSTRUCTION,  # beam width at build time
             random_seed=42
         )
-        self.index.set_ef(50)    # beam width at query time
+        self.index.set_ef(settings.HNSW_EF_QUERY)    # beam width at query time
 
     def build(self, feature_matrix: np.ndarray) -> None:
         """Add all product vectors to the index. Row index == HNSW label."""

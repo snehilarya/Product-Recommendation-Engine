@@ -1,7 +1,12 @@
+import logging
 from functools import lru_cache
 from typing import Optional
 
 import numpy as np
+
+from similarity.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Module-level state — set once during initialize(), read on every query
 _id_to_index: Optional[dict] = None
@@ -9,10 +14,6 @@ _index_to_id: Optional[list] = None
 _features: Optional[np.ndarray] = None
 _prices: Optional[np.ndarray] = None   # sales_price per row index, NaN if missing
 _hnsw_index = None
-
-# Products whose price differs by more than this multiplier are filtered out.
-# e.g. factor=3 means a $500 watch only returns results between ~$167 and $1500.
-_PRICE_BAND_FACTOR = 3.0
 
 
 def initialize(data_path: str) -> None:
@@ -26,23 +27,23 @@ def initialize(data_path: str) -> None:
     from similarity.feature_builder import FeatureBuilder
     from similarity.index import SimilarityIndex
 
-    print(f"Loading products from {data_path}...")
+    logger.info(f"Loading products from {data_path}...")
     df, _id_to_index, _index_to_id = load_products(data_path)
-    print(f"Loaded {len(df)} products.")
+    logger.info(f"Loaded {len(df)} products.")
 
     # Keep a price array for post-retrieval price band filtering.
     # NaN means price is unknown — those products are never filtered out.
     _prices = df["sales_price"].values.astype(float)
 
-    print("Building feature vectors (TF-IDF + TruncatedSVD + numerics)...")
+    logger.info("Building feature vectors (TF-IDF + TruncatedSVD + numerics)...")
     builder = FeatureBuilder()
     _features = builder.build(df)
-    print(f"Feature matrix shape: {_features.shape}")
+    logger.info(f"Feature matrix shape: {_features.shape}")
 
-    print("Building HNSW index...")
+    logger.info("Building HNSW index...")
     _hnsw_index = SimilarityIndex(dim=_features.shape[1], max_elements=len(df))
     _hnsw_index.build(_features)
-    print("HNSW index ready.")
+    logger.info("HNSW index ready.")
 
 
 def product_count() -> int:
@@ -92,12 +93,12 @@ def find_similar_products(product_id: str, num_similar: int) -> list:
 
 def _filter_by_price_band(candidate_indices: list, query_price: float) -> list:
     """
-    Remove candidates whose price is more than _PRICE_BAND_FACTOR times
+    Remove candidates whose price is more than the configured tolerance
     higher or lower than the query product's price.
 
-    A $500 watch with factor=3 keeps results in the ~$167–$1500 range,
-    preventing a $15 plastic watch from ranking above a $450 leather one
-    just because they share the words 'black' and 'watch'.
+    A $500 watch with PRICE_TOLERANCE_UPPER=3.0 keeps results in the
+    ~$167–$1500 range, preventing a $15 plastic watch from ranking above
+    a $450 leather one just because they share the words 'black' and 'watch'.
 
     Products with unknown price (NaN) are always kept.
     If the query product itself has no price, filtering is skipped entirely.
@@ -112,6 +113,7 @@ def _filter_by_price_band(candidate_indices: list, query_price: float) -> list:
             result.append(row_index)
             continue
         ratio = candidate_price / query_price
-        if (1.0 / _PRICE_BAND_FACTOR) <= ratio <= _PRICE_BAND_FACTOR:
+        if settings.PRICE_TOLERANCE_LOWER <= ratio <= settings.PRICE_TOLERANCE_UPPER:
             result.append(row_index)
     return result
+

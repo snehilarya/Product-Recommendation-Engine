@@ -4,6 +4,8 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import MinMaxScaler, normalize
 
+from similarity.config import settings
+
 
 class FeatureBuilder:
     """
@@ -15,10 +17,8 @@ class FeatureBuilder:
       3. TruncatedSVD to 50 dense dims (memory-efficient PCA for sparse input)
       4. L2-normalize the text vectors
       5. Append 2 numeric features: log(price) and rating, MinMax scaled
-      Final vector: float32 of shape (n_products, 52)
+      Final vector: float32 of shape (n_products, SVD_COMPONENTS + 2)
     """
-
-    N_TEXT_COMPONENTS = 50
 
     def __init__(self):
         self.tfidf = TfidfVectorizer(
@@ -27,7 +27,7 @@ class FeatureBuilder:
             min_df=2,          # drop words appearing in only one product (noise/SKU codes)
             sublinear_tf=True  # log(1+count) instead of raw count — handles keyword stuffing
         )
-        self.svd = TruncatedSVD(n_components=self.N_TEXT_COMPONENTS, random_state=42)
+        self.svd = TruncatedSVD(n_components=settings.SVD_COMPONENTS, random_state=42)
         self.scaler = MinMaxScaler()
         self._price_median = None
         self._rating_median = None
