@@ -2,14 +2,24 @@
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Repo-relative path to the LDJSON file produced by unzipping data/archive.zip
+_DEFAULT_DATA_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "data",
+    "marketing_sample_for_amazon_com-amazon_fashion_products.ldjson"
+)
+
+_DEFAULT_ZIP_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "data",
+    "archive.zip"
+)
+
 
 class Settings(BaseSettings):
     # App Config — override with DATA_PATH env var in Docker/Kubernetes
-    DATA_PATH: str = os.path.join(
-        os.path.expanduser("~"),
-        "CodeBase", "sap-cxii-tech-ex-01", "data",
-        "marketing_sample_for_amazon_com-amazon_fashion_products.ldjson"
-    )
+    DATA_PATH: str = _DEFAULT_DATA_PATH
+    ZIP_PATH: str = _DEFAULT_ZIP_PATH
 
     # ML Pipeline Config
     SVD_COMPONENTS: int = 50

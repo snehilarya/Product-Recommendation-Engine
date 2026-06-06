@@ -2,6 +2,7 @@ import pytest
 import similarity.engine as engine
 from similarity.config import settings
 from similarity.data_loader import load_products
+from similarity.engine import _ensure_data_file
 from similarity.feature_builder import FeatureBuilder
 from similarity.index import SimilarityIndex
 
@@ -13,6 +14,7 @@ def init_engine():
 
 @pytest.fixture(scope="session")
 def loaded_data():
+    _ensure_data_file(settings.DATA_PATH)
     df, id_to_index, index_to_id = load_products(settings.DATA_PATH)
     return df, id_to_index, index_to_id
 

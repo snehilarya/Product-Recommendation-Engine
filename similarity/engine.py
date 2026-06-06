@@ -1,4 +1,6 @@
 import logging
+import os
+import zipfile
 from functools import lru_cache
 from typing import Optional
 
@@ -26,6 +28,8 @@ def initialize(data_path: str) -> None:
     from similarity.data_loader import load_products
     from similarity.feature_builder import FeatureBuilder
     from similarity.index import SimilarityIndex
+
+    _ensure_data_file(data_path)
 
     logger.info(f"Loading products from {data_path}...")
     df, _id_to_index, _index_to_id = load_products(data_path)
@@ -91,6 +95,39 @@ def find_similar_products(product_id: str, num_similar: int) -> list:
     return similar_ids
 
 
+def _ensure_data_file(data_path: str) -> None:
+    """
+    If the LDJSON file doesn't exist yet, unzip it from archive.zip.
+    This lets us ship the compressed dataset in the repo without the
+    71 MB uncompressed file.
+    """
+    if os.path.exists(data_path):
+        return
+
+    zip_path = settings.ZIP_PATH
+    if not os.path.exists(zip_path):
+        raise FileNotFoundError(
+            f"Data file not found at {data_path} and no archive at {zip_path}. "
+            f"Set the DATA_PATH environment variable to point to the dataset."
+        )
+
+    logger.info(f"Unzipping dataset from {zip_path}...")
+    data_dir = os.path.dirname(data_path)
+    with zipfile.ZipFile(zip_path, "r") as archive:
+        archive.extractall(data_dir)
+        # The zip may contain a file with a different name (e.g. with a date suffix).
+        # If the expected file still doesn't exist, rename whatever was extracted.
+        if not os.path.exists(data_path):
+            extracted = [
+                os.path.join(data_dir, name)
+                for name in archive.namelist()
+                if name.endswith(".ldjson")
+            ]
+            if extracted:
+                os.rename(extracted[0], data_path)
+    logger.info("Dataset ready.")
+
+
 def _filter_by_price_band(candidate_indices: list, query_price: float) -> list:
     """
     Remove candidates whose price is more than the configured tolerance
@@ -116,4 +153,3 @@ def _filter_by_price_band(candidate_indices: list, query_price: float) -> list:
         if settings.PRICE_TOLERANCE_LOWER <= ratio <= settings.PRICE_TOLERANCE_UPPER:
             result.append(row_index)
     return result
-
