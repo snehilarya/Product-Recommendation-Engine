@@ -213,6 +213,27 @@ class TestAPI:
         )
         assert response.status_code == 422
 
+    def test_busy_server_returns_503(self, first_product_id):
+        # Exhaust the semaphore manually then verify the middleware returns 503
+        import app as app_module
+        # Drain all slots
+        acquired = []
+        for _ in range(app_module._MAX_CONCURRENT):
+            if app_module._semaphore.acquire(blocking=False):
+                acquired.append(True)
+        try:
+            from fastapi.testclient import TestClient
+            from app import app
+            with TestClient(app, raise_server_exceptions=False) as c:
+                response = c.get(
+                    "/find_similar_products",
+                    params={"product_id": first_product_id, "num_similar": 5}
+                )
+            assert response.status_code == 503
+        finally:
+            for _ in acquired:
+                app_module._semaphore.release()
+
 
 class TestPerformance:
 

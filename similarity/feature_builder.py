@@ -1,3 +1,4 @@
+import pickle
 import re
 
 import numpy as np
@@ -104,3 +105,30 @@ class FeatureBuilder:
             return ""
         words = cls._CAMEL_RE.sub(r' \1', category).strip().lower()
         return (words + " ") * 5
+
+    def save(self, path: str) -> None:
+        """Pickle the fitted transformers (TF-IDF, SVD, scaler, medians)."""
+        state = {
+            "tfidf": self.tfidf,
+            "svd": self.svd,
+            "scaler": self.scaler,
+            "price_median": self._price_median,
+            "rating_median": self._rating_median,
+            "bsr_median": self._bsr_median,
+        }
+        with open(path, "wb") as f:
+            pickle.dump(state, f)
+
+    @classmethod
+    def load(cls, path: str) -> "FeatureBuilder":
+        """Restore a previously fitted FeatureBuilder from disk."""
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+        obj = cls.__new__(cls)
+        obj.tfidf = state["tfidf"]
+        obj.svd = state["svd"]
+        obj.scaler = state["scaler"]
+        obj._price_median = state["price_median"]
+        obj._rating_median = state["rating_median"]
+        obj._bsr_median = state["bsr_median"]
+        return obj

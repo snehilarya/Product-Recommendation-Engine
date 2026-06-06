@@ -5,7 +5,21 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # The data folder is copied into the image by the Dockerfile.
-      # Override DATA_PATH here if you want to mount an external dataset instead.
       - PRICE_TOLERANCE_LOWER=0.33
       - PRICE_TOLERANCE_UPPER=3.0
+      # Point at the Redis container for shared query caching across restarts.
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    # Persist Redis data so the query cache survives docker-compose restarts.
+    command: redis-server --save 60 1
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:

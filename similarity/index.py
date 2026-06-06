@@ -15,14 +15,15 @@ class SimilarityIndex:
 
     def __init__(self, dim: int, max_elements: int):
         self.dim = dim
+        self.max_elements = max_elements
         self.index = hnswlib.Index(space="cosine", dim=dim)
         self.index.init_index(
             max_elements=max_elements,
-            M=settings.HNSW_M,                       # links per node — controls graph connectivity
-            ef_construction=settings.HNSW_EF_CONSTRUCTION,  # beam width at build time
+            M=settings.HNSW_M,
+            ef_construction=settings.HNSW_EF_CONSTRUCTION,
             random_seed=42
         )
-        self.index.set_ef(settings.HNSW_EF_QUERY)    # beam width at query time
+        self.index.set_ef(settings.HNSW_EF_QUERY)
 
     def build(self, feature_matrix: np.ndarray) -> None:
         """Add all product vectors to the index. Row index == HNSW label."""
@@ -46,3 +47,18 @@ class SimilarityIndex:
                 neighbor_indices.append(row_index)
 
         return neighbor_indices[:k]
+
+    def save(self, path: str) -> None:
+        """Persist the HNSW graph to disk."""
+        self.index.save_index(path)
+
+    @classmethod
+    def load(cls, path: str, dim: int, max_elements: int) -> "SimilarityIndex":
+        """Reload a previously saved index from disk. Skips the build step."""
+        obj = cls.__new__(cls)
+        obj.dim = dim
+        obj.max_elements = max_elements
+        obj.index = hnswlib.Index(space="cosine", dim=dim)
+        obj.index.load_index(path, max_elements=max_elements)
+        obj.index.set_ef(settings.HNSW_EF_QUERY)
+        return obj
