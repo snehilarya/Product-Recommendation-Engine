@@ -18,25 +18,20 @@ At startup the service loads ~30k Amazon fashion products and builds a vector in
 # Install dependencies
 pip install -r requirements.txt
 
-# Point at your data file
-export DATA_PATH=/path/to/marketing_sample_for_amazon_com-amazon_fashion_products.ldjson
-
-# Start the server
+# Start the server — the dataset is bundled in data/archive.zip and extracted automatically
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-The server takes ~15–20 seconds to start while it builds the index.
+The server takes ~15–20 seconds to start while it builds the index. On first startup it also extracts `data/archive.zip` (~12 MB) into the `data/` folder.
 
 ## Running with Docker
 
 ```bash
 docker build -t similarity-search .
-
-docker run -p 8000:8000 \
-  -v /path/to/data:/app/data \
-  -e DATA_PATH=/app/data/marketing_sample_for_amazon_com-amazon_fashion_products.ldjson \
-  similarity-search
+docker run -p 8000:8000 similarity-search
 ```
+
+The dataset is copied into the image at build time — no volume mount or external data needed.
 
 ## API
 
@@ -73,7 +68,7 @@ Interactive API docs at `http://localhost:8000/docs` after startup.
 pytest tests/ -v
 ```
 
-All 27 tests cover: data loading and cleaning, feature pipeline correctness (shape, dtype, no NaN), HNSW index behaviour, engine caching, API endpoints, and latency (cached query < 1ms, HNSW query < 50ms).
+All 28 tests cover: data loading and cleaning, feature pipeline correctness (shape, dtype, no NaN), HNSW index behaviour, engine caching, API endpoints, and latency (cached query < 1ms, HNSW query < 50ms).
 
 ## Design decisions
 
