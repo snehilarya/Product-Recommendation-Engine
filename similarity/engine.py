@@ -160,51 +160,28 @@ def product_count() -> int:
     return len(_index_to_id) if _index_to_id is not None else 0
 
 
-# Two-level query result cache:
-#   Level 1 — bounded in-process dict, capped at _L1_MAX entries (FIFO eviction)
-#   Level 2 — Redis (milliseconds, survives restarts, shared across replicas)
-# Redis is optional: if REDIS_URL is empty the app works with L1 only.
-_redis_client = None
-_L1_MAX = 10_000
-_l1: dict = {}
+# Query result cache — bounded in-process dict, capped at 10k entries (FIFO eviction).
+# Repeated identical queries return instantly without hitting the HNSW index.
+_CACHE_MAX = 10_000
+_cache: dict = {}
 
 
-def _l1_get(key: str):
-    return _l1.get(key)
+def _cache_get(key: str):
+    return _cache.get(key)
 
 
-def _l1_set(key: str, value):
-    if len(_l1) >= _L1_MAX:
-        # evict the oldest inserted key (dict preserves insertion order in Python 3.7+)
-        del _l1[next(iter(_l1))]
-    _l1[key] = value
-
-
-def _get_redis():
-    """Lazily connect to Redis. Returns None if REDIS_URL is not set."""
-    global _redis_client
-    if _redis_client is not None:
-        return _redis_client
-    if not settings.REDIS_URL:
-        return None
-    try:
-        import redis, json as _json
-        _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
-        _redis_client.ping()
-        logger.info(f"Redis cache connected: {settings.REDIS_URL}")
-    except Exception as e:
-        logger.warning(f"Redis unavailable ({e}), using in-process cache only.")
-        _redis_client = None
-    return _redis_client
+def _cache_set(key: str, value):
+    if len(_cache) >= _CACHE_MAX:
+        del _cache[next(iter(_cache))]
+    _cache[key] = value
 
 
 def find_similar_products(product_id: str, num_similar: int) -> list:
     """
     Return a list of num_similar product IDs most similar to product_id.
 
-    Results are cached at two levels:
-      1. In-process dict  — zero-latency for the most recent queries
-      2. Redis (optional) — survives pod restarts, shared across replicas
+    Results are cached by (product_id, num_similar) — repeated identical
+    queries return instantly without hitting the HNSW index.
 
     Raises:
         RuntimeError: if initialize() has not been called
@@ -217,30 +194,12 @@ def find_similar_products(product_id: str, num_similar: int) -> list:
         raise KeyError(f"Product '{product_id}' not found in dataset")
 
     cache_key = f"{product_id}:{num_similar}"
-
-    # L1 — bounded in-process cache
-    cached = _l1_get(cache_key)
+    cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
-    # L2 — Redis
-    r = _get_redis()
-    if r is not None:
-        import json as _json
-        raw = r.get(cache_key)
-        if raw:
-            result = _json.loads(raw)
-            _l1_set(cache_key, result)
-            return result
-
-    # Cache miss — compute
     result = _compute_similar(product_id, num_similar)
-
-    _l1_set(cache_key, result)
-    if r is not None:
-        import json as _json
-        r.set(cache_key, _json.dumps(result), ex=86400)  # TTL: 24 hours
-
+    _cache_set(cache_key, result)
     return result
 
 

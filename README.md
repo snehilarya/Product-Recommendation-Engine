@@ -16,7 +16,7 @@ At startup the service loads ~30k Amazon fashion products and builds a vector in
 
 5. **Price band filter** — after HNSW returns candidates, we throw out anything priced more than 3× higher or lower than the query product. Prevents a ₹15 plastic watch from being recommended next to a ₹500 leather one just because both say "black" and "watch".
 
-6. **Query cache** — results are stored in a two-level cache: an in-process dict (zero latency) backed by Redis if configured (survives restarts, shared across replicas).
+6. **Query cache** — results are stored in a bounded in-process cache (capped at 10,000 entries, FIFO eviction). Repeated identical queries return instantly without hitting the HNSW index.
 
 ## Running locally
 
@@ -32,20 +32,10 @@ The dataset is bundled as `data/archive.zip` and extracted automatically on firs
 
 ## Running with Docker
 
-The simplest way — just the app, no Redis:
-
 ```bash
 docker build -t similarity-search .
 docker run -p 8000:8000 similarity-search
 ```
-
-Full stack with Redis for persistent query caching:
-
-```bash
-docker-compose up
-```
-
-This brings up the app on port 8000 and a Redis container. The app will automatically use Redis for caching when it's available, and fall back to the in-process cache if it's not.
 
 ## API
 
@@ -96,7 +86,7 @@ pytest tests/ -v
 | ANN index | hnswlib HNSW | Sub-millisecond queries, simple in-process API — FAISS would be better at billion-scale but adds complexity |
 | Feature combination | Concat + cosine | Single pipeline, easy to explain |
 | Index persistence | Save to `.index_cache/` on first build | Cold start drops from 2,600ms to 51ms on restart |
-| Query caching | Two-level: in-process dict + optional Redis | Works without Redis, scales with it |
+| Query caching | Bounded in-process dict (10k entries, FIFO) | No extra services needed; fast enough for single-pod deployment |
 | Backpressure | Semaphore (max 50 concurrent) → 503 | Prevents the server from queueing requests into memory exhaustion under burst load |
 
 ### What we considered and skipped
@@ -107,7 +97,7 @@ pytest tests/ -v
 
 - **Separate image similarity index** — the dataset has image URLs but most are broken (2020 Amazon data). Worth adding if fresh images were available; the architecture already supports extending the feature vector.
 
-- **Redis as hard requirement** — keeping it optional means the app runs with just `uvicorn app:app` and no extra services. Redis is there when you want cross-replica caching, not when you don't.
+- **Shared cache across replicas** — if running multiple Kubernetes replicas, each pod has its own independent cache. A shared Redis cache would unify hot query results across pods, but adds an external dependency and operational overhead. For this scale it's not worth it.
 
 ### Accuracy improvements (measured on this dataset)
 

@@ -24,9 +24,6 @@ class Settings(BaseSettings):
     # Directory where the built index and pipeline are cached between restarts.
     # Set to an empty string to disable caching (always rebuild from scratch).
     CACHE_DIR: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".index_cache")
-    # Redis URL for query result caching across restarts and replicas.
-    # Leave empty to use the in-process LRU cache only (default, no Redis needed).
-    REDIS_URL: str = ""
 
     # ML Pipeline Config
     # SVD_COMPONENTS=75 captures 34% text variance vs 29% at 50; marginal gain
