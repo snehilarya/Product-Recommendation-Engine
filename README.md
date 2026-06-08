@@ -38,7 +38,7 @@ pip install -r requirements.txt
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-First startup takes about 2–3 seconds to build the index and saves it to `.index_cache/`. Every restart after that loads from disk and is ready in ~1 second instead. The cache directory is versioned by config hash — if you change `SVD_COMPONENTS`, `NUMERIC_WEIGHT`, `HNSW_M`, `HNSW_EF_CONSTRUCTION`, or `FEATURE_VERSION`, the app automatically detects the mismatch and rebuilds.
+First startup takes about 2–3 seconds to build the index and saves it to `.index_cache/`. Every restart after that loads from disk and is ready in ~1 second instead. The cache directory is versioned by config hash — if you change `SVD_COMPONENTS`, `NUMERIC_WEIGHT`, `HNSW_M`, `HNSW_EF_CONSTRUCTION`, `FEATURE_VERSION`, or `CATEGORY_TOKEN_REPEAT`, the app automatically detects the mismatch and rebuilds.
 
 > **Kubernetes note:** `.index_cache/` is written to the container's local filesystem. In K8s, pod recreation (deploys, node rescheduling, OOM kills) wipes the local filesystem — the fast-load path only applies to in-place restarts. To benefit from caching across pod recreations, mount a `PersistentVolumeClaim` at the path set by the `CACHE_DIR` environment variable.
 
@@ -73,7 +73,7 @@ curl "http://localhost:8000/find_similar_products?product_id=26d41bdc1495de290bc
 
 ```bash
 curl http://localhost:8000/health
-# {"status": "ok", "products_loaded": 25855}
+# {"status": "ok", "products_loaded": 28687}
 ```
 
 Use this as the Kubernetes liveness/readiness probe. It returns `products_loaded: 0` if the engine hasn't finished initializing yet.
