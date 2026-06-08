@@ -1,3 +1,4 @@
+import pickle
 import re
 
 import numpy as np
@@ -18,9 +19,13 @@ class FeatureBuilder:
       2. TF-IDF vectorize (sparse, up to 5000 vocab)
       3. TruncatedSVD to SVD_COMPONENTS dense dims (memory-efficient PCA for sparse input)
       4. L2-normalize the text vectors
-      5. Append 3 numeric features: log(price), rating, log(bestsellers_rank),
-         MinMax scaled then multiplied by NUMERIC_WEIGHT
-      Final vector: float32 of shape (n_products, SVD_COMPONENTS + 3)
+      5. Append 4 numeric features: log(price), rating, log(bestsellers_rank),
+         log(weight) — MinMax scaled then multiplied by NUMERIC_WEIGHT
+      Final vector: float32 of shape (n_products, SVD_COMPONENTS + 4)
+
+    Weight is only 21% populated in this dataset (999999999 sentinel for unknown).
+    Missing values are imputed with the median. The spec lists weight as a required
+    attribute, so it is included despite the low coverage.
 
     Category token injection: the child_category label is split from CamelCase into
     words and appended to the text corpus 5 times. This raised same-category hit rate
@@ -41,6 +46,7 @@ class FeatureBuilder:
         self._price_median = None
         self._rating_median = None
         self._bsr_median = None
+        self._weight_median = None
 
     def build(self, df: pd.DataFrame) -> np.ndarray:
         """Fit all transformers on df and return the full feature matrix."""
@@ -75,16 +81,19 @@ class FeatureBuilder:
 
     def _build_numeric_features(self, df: pd.DataFrame, fit: bool) -> np.ndarray:
         if fit:
-            self._price_median = df["sales_price"].median()
+            self._price_median  = df["sales_price"].median()
             self._rating_median = df["rating"].median()
-            self._bsr_median = df["bestsellers_rank"].median()
+            self._bsr_median    = df["bestsellers_rank"].median()
+            self._weight_median = df["weight"].median()
 
-        price_log = np.log1p(df["sales_price"].fillna(self._price_median).values).reshape(-1, 1)
+        price_log  = np.log1p(df["sales_price"].fillna(self._price_median).values).reshape(-1, 1)
         rating_col = df["rating"].fillna(self._rating_median).values.reshape(-1, 1)
         # log-transform rank: range is 6–2.8M, log maps it to 1–14
-        bsr_log = np.log1p(df["bestsellers_rank"].fillna(self._bsr_median).values).reshape(-1, 1)
+        bsr_log    = np.log1p(df["bestsellers_rank"].fillna(self._bsr_median).values).reshape(-1, 1)
+        # weight: 21% populated — median-imputed for the rest per spec requirement
+        weight_log = np.log1p(df["weight"].fillna(self._weight_median).values).reshape(-1, 1)
 
-        numeric_matrix = np.hstack([price_log, rating_col, bsr_log]).astype(np.float32)
+        numeric_matrix = np.hstack([price_log, rating_col, bsr_log, weight_log]).astype(np.float32)
 
         scaled = (
             self.scaler.fit_transform(numeric_matrix) if fit
@@ -104,3 +113,32 @@ class FeatureBuilder:
             return ""
         words = cls._CAMEL_RE.sub(r' \1', category).strip().lower()
         return (words + " ") * 5
+
+    def save(self, path: str) -> None:
+        """Pickle the fitted transformers (TF-IDF, SVD, scaler, medians)."""
+        state = {
+            "tfidf": self.tfidf,
+            "svd": self.svd,
+            "scaler": self.scaler,
+            "price_median": self._price_median,
+            "rating_median": self._rating_median,
+            "bsr_median": self._bsr_median,
+            "weight_median": self._weight_median,
+        }
+        with open(path, "wb") as f:
+            pickle.dump(state, f)
+
+    @classmethod
+    def load(cls, path: str) -> "FeatureBuilder":
+        """Restore a previously fitted FeatureBuilder from disk."""
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+        obj = cls.__new__(cls)
+        obj.tfidf = state["tfidf"]
+        obj.svd = state["svd"]
+        obj.scaler = state["scaler"]
+        obj._price_median = state["price_median"]
+        obj._rating_median = state["rating_median"]
+        obj._bsr_median = state["bsr_median"]
+        obj._weight_median = state.get("weight_median")  # graceful for older caches
+        return obj

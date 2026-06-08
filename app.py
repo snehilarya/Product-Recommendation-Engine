@@ -1,8 +1,10 @@
 import logging
+import threading
 from contextlib import asynccontextmanager
 from typing import List
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 import similarity.engine as engine
 from similarity.config import settings
@@ -29,6 +31,28 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Semaphore-based concurrency cap: at most MAX_CONCURRENT requests are allowed
+# to run find_similar_products at the same time. Requests beyond this cap get a
+# 503 immediately instead of queuing indefinitely and exhausting memory.
+_MAX_CONCURRENT = 50
+_semaphore = threading.Semaphore(_MAX_CONCURRENT)
+
+
+@app.middleware("http")
+async def concurrency_limit(request: Request, call_next):
+    if request.url.path == "/find_similar_products":
+        acquired = _semaphore.acquire(blocking=False)
+        if not acquired:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Server busy, please retry shortly."}
+            )
+        try:
+            return await call_next(request)
+        finally:
+            _semaphore.release()
+    return await call_next(request)
+
 
 @app.get("/health")
 def health():
@@ -53,3 +77,8 @@ def find_similar_products(
             status_code=404,
             detail=f"Product '{product_id}' not found in dataset"
         )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

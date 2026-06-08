@@ -5,7 +5,5 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # The data folder is copied into the image by the Dockerfile.
-      # Override DATA_PATH here if you want to mount an external dataset instead.
       - PRICE_TOLERANCE_LOWER=0.33
       - PRICE_TOLERANCE_UPPER=3.0

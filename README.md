@@ -4,25 +4,41 @@ A FastAPI microservice that returns similar Amazon fashion products given a prod
 
 ## How it works
 
-At startup the service loads ~30k Amazon fashion products and builds a vector index:
+At startup the service loads ~30k Amazon fashion products and builds a vector index in memory. Here's the full pipeline:
 
-1. **Text features** — product name, brand, colour, and description are concatenated into one string per product and vectorized with TF-IDF (5000-token vocabulary, `min_df=2` to drop single-occurrence noise, `sublinear_tf=True` to dampen keyword-stuffed descriptions)
-2. **Dimensionality reduction** — TruncatedSVD reduces the sparse TF-IDF matrix to 50 dense dimensions (equivalent to PCA, but works on sparse input directly — avoids densifying a 600 MB matrix)
-3. **Numeric features** — `sales_price` (log-transformed, then Min-Max scaled) and `rating` (Min-Max scaled) appended as 2 more dimensions → 52-dim float32 vector per product
-4. **HNSW index** — all 52-dim vectors are inserted into an hnswlib cosine-space index (`M=16`, `ef_construction=200`) for approximate nearest-neighbour search at sub-millisecond latency
-5. **LRU cache** — query results are cached by `(product_id, num_similar)` — repeated identical requests return instantly
+1. **Text features** — product name, brand, colour, and "customers also bought" text are concatenated into one string per product. We also inject the product's Amazon category label (e.g. "WomensKurtasKurtis") repeated 5 times — this turned out to be the biggest single accuracy improvement, taking same-category hit rate from 80% to 96%. Everything goes through TF-IDF (5000-token vocabulary).
+
+2. **Dimensionality reduction** — TruncatedSVD squashes the sparse TF-IDF matrix down to 75 dense dimensions. We use TruncatedSVD instead of regular PCA because PCA would first need to convert the sparse matrix to dense (that's ~600 MB for this dataset). TruncatedSVD does the same thing but works on sparse input directly.
+
+3. **Numeric features** — four numeric attributes from the spec are appended as additional dimensions, each log-transformed where skewed and MinMax scaled then down-weighted at 0.3×:
+   - `sales_price` — log-transformed (right-skewed: most ₹300–₹600, some ₹8000+)
+   - `rating` — direct scale
+   - `bestsellers_rank` — log-transformed (range 6 to 2.8M)
+   - `weight` — log-transformed; only 21% of products have a real value, the rest are median-imputed
+
+   → 79-dim float32 vector per product.
+
+4. **HNSW index** — all vectors go into an hnswlib cosine-space index for approximate nearest-neighbour search. Queries run in ~0.02ms.
+
+5. **Price band filter** — after HNSW returns candidates, we throw out anything priced more than 3× higher or lower than the query product. Prevents a ₹15 plastic watch from being recommended next to a ₹500 leather one just because both say "black" and "watch".
+
+6. **Near-duplicate removal** — products with the same name, brand, and price are deduplicated at load time. Without this, the same item listed multiple times under different seller IDs would fill all top-N slots.
+
+7. **Query cache** — results are stored in a bounded in-process cache (capped at 10,000 entries, FIFO eviction). Repeated identical queries return instantly without hitting the HNSW index.
 
 ## Running locally
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
 
-# Start the server — the dataset is bundled in data/archive.zip and extracted automatically
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-The server takes ~15–20 seconds to start while it builds the index. On first startup it also extracts `data/archive.zip` (~12 MB) into the `data/` folder.
+First startup takes about 2–3 seconds to build the index and saves it to `.index_cache/`. Every restart after that loads from disk and is ready in ~50ms instead. The cache directory is versioned by config hash — if you change `SVD_COMPONENTS` or `NUMERIC_WEIGHT`, the app automatically detects the mismatch and rebuilds.
+
+> **Kubernetes note:** `.index_cache/` is written to the container's local filesystem. In K8s, pod recreation (deploys, node rescheduling, OOM kills) wipes the local filesystem — the fast-load path only applies to in-place restarts. To benefit from caching across pod recreations, mount a `PersistentVolumeClaim` at the path set by the `CACHE_DIR` environment variable.
+
+The dataset is bundled as `data/archive.zip` and extracted automatically on first run — no manual data setup needed.
 
 ## Running with Docker
 
@@ -30,8 +46,6 @@ The server takes ~15–20 seconds to start while it builds the index. On first s
 docker build -t similarity-search .
 docker run -p 8000:8000 similarity-search
 ```
-
-The dataset is copied into the image at build time — no volume mount or external data needed.
 
 ## API
 
@@ -42,14 +56,14 @@ Returns a list of similar product IDs.
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `product_id` | string | required | `uniq_id` from the dataset |
-| `num_similar` | int | 5 | Number of results (1–200) |
+| `num_similar` | int | 5 | How many results to return (1–200) |
 
 ```bash
 curl "http://localhost:8000/find_similar_products?product_id=26d41bdc1495de290bc8e6062d927729&num_similar=5"
 # ["abc123...", "def456...", ...]
 ```
 
-**404** if `product_id` is not in the dataset. **422** if `num_similar` is out of range.
+**404** if the product ID isn't in the dataset. **422** if `num_similar` is out of range. **503** if the server is handling too many requests at once — just retry.
 
 ### `GET /health`
 
@@ -58,9 +72,11 @@ curl http://localhost:8000/health
 # {"status": "ok", "products_loaded": 30000}
 ```
 
+Use this as the Kubernetes liveness/readiness probe. It returns `products_loaded: 0` if the engine hasn't finished initializing yet.
+
 ### Swagger UI
 
-Interactive API docs at `http://localhost:8000/docs` after startup.
+Interactive docs at `http://localhost:8000/docs` once the server is running.
 
 ## Running tests
 
@@ -68,15 +84,40 @@ Interactive API docs at `http://localhost:8000/docs` after startup.
 pytest tests/ -v
 ```
 
-All 28 tests cover: data loading and cleaning, feature pipeline correctness (shape, dtype, no NaN), HNSW index behaviour, engine caching, API endpoints, and latency (cached query < 1ms, HNSW query < 50ms).
+30 tests covering: data loading and cleaning (including weight sentinel handling), feature pipeline (shape, dtype, no NaN/inf), HNSW index behaviour, engine caching, API endpoints (200/404/422/503), and latency (cached query < 1ms, HNSW query < 50ms).
 
-## Design decisions
+## Architecture decisions
 
-| Decision | Chosen | Considered | Why |
-|---|---|---|---|
-| Text similarity | TF-IDF | Sentence-transformers | No model download, fast, interpretable |
-| Dimensionality reduction | TruncatedSVD | Regular PCA | Works on sparse matrices directly — avoids 600 MB densification |
-| ANN index | hnswlib | FAISS | Simpler API for in-process use at this scale; FAISS is the better choice at billion-scale |
-| Feature combination | Concat + cosine | Separate indexes + score fusion | Single explainable pipeline |
-| Caching | `functools.lru_cache` | Redis | No extra services needed for single-pod deployment |
-| Index lifetime | Build on startup | Persist to disk | No build step or file management; adds ~15s startup time |
+### What we picked and why
+
+| Decision | Chosen | Why |
+|---|---|---|
+| Text similarity | TF-IDF + TruncatedSVD | No model download, fast at startup, explainable |
+| ANN index | hnswlib HNSW | Sub-millisecond queries, simple in-process API. Based on Malkov & Yashunin (2018) — [arxiv.org/abs/1603.09320](https://arxiv.org/abs/1603.09320). FAISS would be better at billion-scale but adds complexity for 30k products. |
+| Feature combination | Concat + cosine | Single pipeline, easy to explain |
+| Index persistence | Save to `.index_cache/` on first build | Cold start drops from 2,600ms to 51ms on restart |
+| Query caching | Bounded in-process dict (10k entries, FIFO) | No extra services needed; fast enough for single-pod deployment |
+| Backpressure | Semaphore (max 50 concurrent) → 503 | Prevents the server from queueing requests into memory exhaustion under burst load |
+
+### What we considered and skipped
+
+- **Sentence transformers / BERT embeddings** — would give better semantic understanding but startup time goes from 3 seconds to several minutes and the model is 400MB+. For a 30k-product dataset where product names are already quite descriptive, TF-IDF captures most of the signal.
+
+- **FAISS** — more battle-tested at scale, better GPU support. For 30k products in a single process, hnswlib is simpler and equally fast.
+
+- **Separate image similarity index** — the dataset has image URLs but most are broken (2020 Amazon data). Worth adding if fresh images were available; the architecture already supports extending the feature vector.
+
+- **Shared cache across replicas** — if running multiple Kubernetes replicas, each pod has its own independent cache. A shared Redis cache would unify hot query results across pods, but adds an external dependency and operational overhead. For this scale it's not worth it.
+
+### Accuracy improvements (measured on this dataset)
+
+We tested every feature change against same-category hit rate — for a given product, what percentage of the top-3 results are from the same Amazon category.
+
+| Version | Same-category hit rate |
+|---|---|
+| Baseline (SVD=50, price+rating) | 75% |
+| SVD tuned to 75 | 80% |
+| + Category tokens in TF-IDF corpus | 95% |
+| + Amazon Bestsellers Rank | 96% |
+
+The category token injection was by far the biggest win. Every product has an Amazon category label (`WomensKurtasKurtis`, `MensT_Shirts`, etc.) that we were ignoring. Splitting it into words and repeating it 5 times in the text corpus gives TF-IDF a very strong "this is what kind of thing this is" signal.

@@ -1,7 +1,8 @@
+import hashlib
 import logging
 import os
+import pickle
 import zipfile
-from functools import lru_cache
 from typing import Optional
 
 import numpy as np
@@ -17,11 +18,45 @@ _features: Optional[np.ndarray] = None
 _prices: Optional[np.ndarray] = None   # sales_price per row index, NaN if missing
 _hnsw_index = None
 
+# Cache file names written inside settings.CACHE_DIR
+_CACHE_INDEX_FILE    = "hnsw_index.bin"
+_CACHE_PIPELINE_FILE = "feature_pipeline.pkl"
+_CACHE_META_FILE     = "meta.pkl"
+
+
+def _config_hash() -> str:
+    """
+    Short hash of the ML hyperparameters that affect the built index.
+    Used as the cache subdirectory name — if any param changes, the old
+    cache is in a different directory and a fresh build is triggered automatically.
+    """
+    key = (
+        f"v={settings.FEATURE_VERSION}"
+        f"_svd={settings.SVD_COMPONENTS}"
+        f"_w={settings.NUMERIC_WEIGHT}"
+        f"_M={settings.HNSW_M}"
+        f"_ef={settings.HNSW_EF_CONSTRUCTION}"
+    )
+    return hashlib.md5(key.encode()).hexdigest()[:8]
+
+
+def _cache_dir() -> str:
+    """Return the versioned cache directory for the current config."""
+    if not settings.CACHE_DIR:
+        return ""
+    return os.path.join(settings.CACHE_DIR, _config_hash())
+
 
 def initialize(data_path: str) -> None:
     """
     Load data, build feature vectors, and build the HNSW index.
     Must be called once before any calls to find_similar_products().
+
+    On the first run this takes ~2-3 seconds to build everything from scratch,
+    then saves the result to CACHE_DIR. Subsequent restarts load from disk in
+    ~100ms instead of rebuilding.
+
+    Set CACHE_DIR='' to disable caching (always rebuild).
     """
     global _id_to_index, _index_to_id, _features, _prices, _hnsw_index
 
@@ -31,12 +66,13 @@ def initialize(data_path: str) -> None:
 
     _ensure_data_file(data_path)
 
+    if _try_load_from_cache():
+        return
+
     logger.info(f"Loading products from {data_path}...")
     df, _id_to_index, _index_to_id = load_products(data_path)
     logger.info(f"Loaded {len(df)} products.")
 
-    # Keep a price array for post-retrieval price band filtering.
-    # NaN means price is unknown — those products are never filtered out.
     _prices = df["sales_price"].values.astype(float)
 
     logger.info("Building feature vectors (TF-IDF + TruncatedSVD + numerics)...")
@@ -49,13 +85,98 @@ def initialize(data_path: str) -> None:
     _hnsw_index.build(_features)
     logger.info("HNSW index ready.")
 
+    _save_to_cache(builder)
+
+
+def _try_load_from_cache() -> bool:
+    """
+    Attempt to load a previously built index from the versioned cache dir.
+    Returns True if successful, False if cache is absent or corrupt.
+    If the config changed (different hash), the old cache dir won't exist
+    and a fresh build is triggered automatically.
+    """
+    global _id_to_index, _index_to_id, _features, _prices, _hnsw_index
+
+    cache_dir = _cache_dir()
+    if not cache_dir:
+        return False
+
+    index_path    = os.path.join(cache_dir, _CACHE_INDEX_FILE)
+    pipeline_path = os.path.join(cache_dir, _CACHE_PIPELINE_FILE)
+    meta_path     = os.path.join(cache_dir, _CACHE_META_FILE)
+
+    if not all(os.path.exists(p) for p in [index_path, pipeline_path, meta_path]):
+        return False
+
+    try:
+        logger.info(f"Loading cached index from {cache_dir}...")
+        from similarity.index import SimilarityIndex
+
+        with open(meta_path, "rb") as f:
+            meta = pickle.load(f)
+
+        _id_to_index = meta["id_to_index"]
+        _index_to_id = meta["index_to_id"]
+        _prices      = meta["prices"]
+        _features    = meta["features"]
+
+        _hnsw_index = SimilarityIndex.load(
+            index_path,
+            dim=_features.shape[1],
+            max_elements=len(_index_to_id),
+        )
+        logger.info(f"Loaded {len(_index_to_id)} products from cache.")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Cache load failed ({e}), rebuilding from scratch.")
+        return False
+
+
+def _save_to_cache(builder) -> None:
+    """Persist the built index and pipeline to the versioned cache dir."""
+    cache_dir = _cache_dir()
+    if not cache_dir:
+        return
+
+    os.makedirs(cache_dir, exist_ok=True)
+
+    logger.info(f"Saving index cache to {cache_dir}...")
+    _hnsw_index.save(os.path.join(cache_dir, _CACHE_INDEX_FILE))
+    builder.save(os.path.join(cache_dir, _CACHE_PIPELINE_FILE))
+
+    with open(os.path.join(cache_dir, _CACHE_META_FILE), "wb") as f:
+        pickle.dump({
+            "id_to_index": _id_to_index,
+            "index_to_id": _index_to_id,
+            "prices":      _prices,
+            "features":    _features,
+        }, f)
+
+    logger.info("Index cache saved.")
+
 
 def product_count() -> int:
     """Return number of products loaded. 0 if not yet initialized."""
     return len(_index_to_id) if _index_to_id is not None else 0
 
 
-@lru_cache(maxsize=1000)
+# Query result cache — bounded in-process dict, capped at 10k entries (FIFO eviction).
+# Repeated identical queries return instantly without hitting the HNSW index.
+_CACHE_MAX = 10_000
+_cache: dict = {}
+
+
+def _cache_get(key: str):
+    return _cache.get(key)
+
+
+def _cache_set(key: str, value):
+    if len(_cache) >= _CACHE_MAX:
+        del _cache[next(iter(_cache))]
+    _cache[key] = value
+
+
 def find_similar_products(product_id: str, num_similar: int) -> list:
     """
     Return a list of num_similar product IDs most similar to product_id.
@@ -73,12 +194,21 @@ def find_similar_products(product_id: str, num_similar: int) -> list:
     if product_id not in _id_to_index:
         raise KeyError(f"Product '{product_id}' not found in dataset")
 
+    cache_key = f"{product_id}:{num_similar}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    result = _compute_similar(product_id, num_similar)
+    _cache_set(cache_key, result)
+    return result
+
+
+def _compute_similar(product_id: str, num_similar: int) -> list:
     query_row_index = _id_to_index[product_id]
     query_vector = _features[query_row_index]
     query_price = _prices[query_row_index]
 
-    # Fetch more candidates than needed so we still have num_similar results
-    # after the price band filter removes cross-segment noise.
     candidates = _hnsw_index.query(
         vector=query_vector,
         k=num_similar * 5,
@@ -87,12 +217,10 @@ def find_similar_products(product_id: str, num_similar: int) -> list:
 
     filtered = _filter_by_price_band(candidates, query_price)
 
-    # Fall back to unfiltered results if price is unknown or too few survive
     if len(filtered) < num_similar:
         filtered = candidates
 
-    similar_ids = [_index_to_id[i] for i in filtered[:num_similar]]
-    return similar_ids
+    return [_index_to_id[i] for i in filtered[:num_similar]]
 
 
 def _ensure_data_file(data_path: str) -> None:

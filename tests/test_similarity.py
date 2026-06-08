@@ -20,11 +20,6 @@ class TestDataLoader:
     def test_no_duplicate_unique_ids(self, id_to_index, index_to_id):
         assert len(id_to_index) == len(index_to_id)
 
-    def test_weight_sentinel_is_null(self, df):
-        # 999999999 is a placeholder for unknown weight — must be None/NaN
-        real_weights = df["weight"].dropna()
-        assert (real_weights >= 1e9).sum() == 0
-
     def test_id_to_index_maps_correctly(self, id_to_index, index_to_id):
         first_id = index_to_id[0]
         assert id_to_index[first_id] == 0
@@ -33,6 +28,11 @@ class TestDataLoader:
         # null-filled to empty string so TF-IDF concat doesn't break
         assert df["brand"].isna().sum() == 0
         assert df["colour"].isna().sum() == 0
+
+    def test_weight_sentinel_cleaned(self, df):
+        # 999999999 sentinel must be converted to NaN — no real product weighs 1B grams
+        real_weights = df["weight"].dropna()
+        assert (real_weights >= 999999999).sum() == 0
 
     def test_bestsellers_rank_extracted(self, df):
         # 83% of products have a rank in product_details — spot-check it's numeric
@@ -51,7 +51,7 @@ class TestFeatureBuilder:
     def test_output_shape_is_correct(self, df, built_features):
         from similarity.config import settings
         feature_matrix, builder = built_features
-        expected_dims = settings.SVD_COMPONENTS + 3  # text dims + price + rating + bsr
+        expected_dims = settings.SVD_COMPONENTS + 4  # text + price + rating + bsr + weight
         assert feature_matrix.shape == (len(df), expected_dims)
 
     def test_output_dtype_is_float32(self, df, built_features):
@@ -212,6 +212,27 @@ class TestAPI:
             params={"product_id": first_product_id, "num_similar": 0}
         )
         assert response.status_code == 422
+
+    def test_busy_server_returns_503(self, first_product_id):
+        # Exhaust the semaphore manually then verify the middleware returns 503
+        import app as app_module
+        # Drain all slots
+        acquired = []
+        for _ in range(app_module._MAX_CONCURRENT):
+            if app_module._semaphore.acquire(blocking=False):
+                acquired.append(True)
+        try:
+            from fastapi.testclient import TestClient
+            from app import app
+            with TestClient(app, raise_server_exceptions=False) as c:
+                response = c.get(
+                    "/find_similar_products",
+                    params={"product_id": first_product_id, "num_similar": 5}
+                )
+            assert response.status_code == 503
+        finally:
+            for _ in acquired:
+                app_module._semaphore.release()
 
 
 class TestPerformance:
