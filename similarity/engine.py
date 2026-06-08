@@ -98,7 +98,7 @@ def _try_load_from_cache() -> bool:
     If the config changed (different hash), the old cache dir won't exist
     and a fresh build is triggered automatically.
     """
-    global _id_to_index, _index_to_id, _features, _prices, _hnsw_index
+    global _id_to_index, _index_to_id, _features, _prices, _hnsw_index, _df
 
     cache_dir = _cache_dir()
     if not cache_dir:
@@ -122,6 +122,7 @@ def _try_load_from_cache() -> bool:
         _index_to_id = meta["index_to_id"]
         _prices      = meta["prices"]
         _features    = meta["features"]
+        _df          = meta.get("df")   # None for caches built before this field was added
 
         _hnsw_index = SimilarityIndex.load(
             index_path,
@@ -154,6 +155,7 @@ def _save_to_cache(builder) -> None:
             "index_to_id": _index_to_id,
             "prices":      _prices,
             "features":    _features,
+            "df":          _df,
         }, f)
 
     logger.info("Index cache saved.")

@@ -30,9 +30,6 @@ _CANONICAL_COLOURS = [
 # Number of canonical colour dims = len(_CANONICAL_COLOURS)
 _COLOUR_DIMS = len(_CANONICAL_COLOURS)
 
-# Number of categorical feature dimensions: brand (1) + colour (per canonical set)
-_CATEGORICAL_DIMS = 1 + _COLOUR_DIMS
-
 
 class FeatureBuilder:
     """

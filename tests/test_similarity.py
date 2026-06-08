@@ -67,8 +67,9 @@ class TestFeatureBuilder:
     def test_numeric_features_are_scaled(self, built_features):
         from similarity.config import settings
         feature_matrix, _ = built_features
-        # last 4 cols are the numeric block (MinMaxScaled × NUMERIC_WEIGHT)
-        numeric_part = feature_matrix[:, -4:]
+        # numeric block sits at [SVD_COMPONENTS : SVD_COMPONENTS+4] — explicit slice
+        # avoids grabbing categorical dims that happen to share the same scale
+        numeric_part = feature_matrix[:, settings.SVD_COMPONENTS : settings.SVD_COMPONENTS + 4]
         assert numeric_part.min() >= 0.0
         assert numeric_part.max() <= settings.NUMERIC_WEIGHT + 1e-5
 
