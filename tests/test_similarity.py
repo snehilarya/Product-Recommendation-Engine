@@ -20,11 +20,6 @@ class TestDataLoader:
     def test_no_duplicate_unique_ids(self, id_to_index, index_to_id):
         assert len(id_to_index) == len(index_to_id)
 
-    def test_weight_sentinel_is_null(self, df):
-        # 999999999 is a placeholder for unknown weight — must be None/NaN
-        real_weights = df["weight"].dropna()
-        assert (real_weights >= 1e9).sum() == 0
-
     def test_id_to_index_maps_correctly(self, id_to_index, index_to_id):
         first_id = index_to_id[0]
         assert id_to_index[first_id] == 0

@@ -26,7 +26,7 @@ pip install -r requirements.txt
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-First startup takes about 2–3 seconds to build the index and saves it to `.index_cache/`. Every restart after that loads from disk and is ready in ~50ms instead.
+First startup takes about 2–3 seconds to build the index and saves it to `.index_cache/`. Every restart after that loads from disk and is ready in ~50ms instead. The cache directory is versioned by config hash — if you change `SVD_COMPONENTS` or `NUMERIC_WEIGHT`, the app automatically detects the mismatch and rebuilds.
 
 The dataset is bundled as `data/archive.zip` and extracted automatically on first run — no manual data setup needed.
 

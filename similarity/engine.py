@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import pickle
@@ -20,7 +21,29 @@ _hnsw_index = None
 # Cache file names written inside settings.CACHE_DIR
 _CACHE_INDEX_FILE    = "hnsw_index.bin"
 _CACHE_PIPELINE_FILE = "feature_pipeline.pkl"
-_CACHE_META_FILE     = "meta.pkl"      # id maps + prices + feature shape
+_CACHE_META_FILE     = "meta.pkl"
+
+
+def _config_hash() -> str:
+    """
+    Short hash of the ML hyperparameters that affect the built index.
+    Used as the cache subdirectory name — if any param changes, the old
+    cache is in a different directory and a fresh build is triggered automatically.
+    """
+    key = (
+        f"svd={settings.SVD_COMPONENTS}"
+        f"_w={settings.NUMERIC_WEIGHT}"
+        f"_M={settings.HNSW_M}"
+        f"_ef={settings.HNSW_EF_CONSTRUCTION}"
+    )
+    return hashlib.md5(key.encode()).hexdigest()[:8]
+
+
+def _cache_dir() -> str:
+    """Return the versioned cache directory for the current config."""
+    if not settings.CACHE_DIR:
+        return ""
+    return os.path.join(settings.CACHE_DIR, _config_hash())
 
 
 def initialize(data_path: str) -> None:
@@ -66,12 +89,14 @@ def initialize(data_path: str) -> None:
 
 def _try_load_from_cache() -> bool:
     """
-    Attempt to load a previously built index from CACHE_DIR.
+    Attempt to load a previously built index from the versioned cache dir.
     Returns True if successful, False if cache is absent or corrupt.
+    If the config changed (different hash), the old cache dir won't exist
+    and a fresh build is triggered automatically.
     """
     global _id_to_index, _index_to_id, _features, _prices, _hnsw_index
 
-    cache_dir = settings.CACHE_DIR
+    cache_dir = _cache_dir()
     if not cache_dir:
         return False
 
@@ -99,7 +124,7 @@ def _try_load_from_cache() -> bool:
             dim=_features.shape[1],
             max_elements=len(_index_to_id),
         )
-        logger.info(f"Loaded {len(_index_to_id)} products from cache in ~100ms.")
+        logger.info(f"Loaded {len(_index_to_id)} products from cache.")
         return True
 
     except Exception as e:
@@ -108,8 +133,8 @@ def _try_load_from_cache() -> bool:
 
 
 def _save_to_cache(builder) -> None:
-    """Persist the built index and pipeline to CACHE_DIR for future restarts."""
-    cache_dir = settings.CACHE_DIR
+    """Persist the built index and pipeline to the versioned cache dir."""
+    cache_dir = _cache_dir()
     if not cache_dir:
         return
 
@@ -136,11 +161,23 @@ def product_count() -> int:
 
 
 # Two-level query result cache:
-#   Level 1 — in-process dict (microseconds, survives nothing)
-#   Level 2 — Redis (milliseconds, survives restarts and is shared across replicas)
+#   Level 1 — bounded in-process dict, capped at _L1_MAX entries (FIFO eviction)
+#   Level 2 — Redis (milliseconds, survives restarts, shared across replicas)
 # Redis is optional: if REDIS_URL is empty the app works with L1 only.
-_query_cache: dict = {}
 _redis_client = None
+_L1_MAX = 10_000
+_l1: dict = {}
+
+
+def _l1_get(key: str):
+    return _l1.get(key)
+
+
+def _l1_set(key: str, value):
+    if len(_l1) >= _L1_MAX:
+        # evict the oldest inserted key (dict preserves insertion order in Python 3.7+)
+        del _l1[next(iter(_l1))]
+    _l1[key] = value
 
 
 def _get_redis():
@@ -181,24 +218,25 @@ def find_similar_products(product_id: str, num_similar: int) -> list:
 
     cache_key = f"{product_id}:{num_similar}"
 
-    # L1 — in-process
-    if cache_key in _query_cache:
-        return _query_cache[cache_key]
+    # L1 — bounded in-process cache
+    cached = _l1_get(cache_key)
+    if cached is not None:
+        return cached
 
     # L2 — Redis
     r = _get_redis()
     if r is not None:
         import json as _json
-        cached = r.get(cache_key)
-        if cached:
-            result = _json.loads(cached)
-            _query_cache[cache_key] = result
+        raw = r.get(cache_key)
+        if raw:
+            result = _json.loads(raw)
+            _l1_set(cache_key, result)
             return result
 
     # Cache miss — compute
     result = _compute_similar(product_id, num_similar)
 
-    _query_cache[cache_key] = result
+    _l1_set(cache_key, result)
     if r is not None:
         import json as _json
         r.set(cache_key, _json.dumps(result), ex=86400)  # TTL: 24 hours
