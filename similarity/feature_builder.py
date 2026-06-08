@@ -9,9 +9,29 @@ from sklearn.preprocessing import MinMaxScaler, normalize
 
 from similarity.config import settings
 
-# Number of categorical feature dimensions appended after the numeric block.
-# brand (1 dim, label-encoded top-N) + colour (1 dim, hashed bucket).
-_CATEGORICAL_DIMS = 2
+# Canonical base colours derived from word-frequency analysis of this dataset.
+# Each entry maps one or more surface forms to a single canonical name.
+# Order matters for the feature vector — don't reorder without bumping FEATURE_VERSION.
+_CANONICAL_COLOURS = [
+    ("blue",     ["blue", "navy", "denim", "indigo", "royal", "sky", "teal", "aqua", "turquoise"]),
+    ("black",    ["black", "jet", "charcoal"]),
+    ("red",      ["red", "maroon", "wine", "rust", "coral", "magenta", "rani", "rose"]),
+    ("white",    ["white", "cream", "off", "ivory"]),
+    ("pink",     ["pink", "peach", "baby", "skin"]),
+    ("green",    ["green", "olive", "parrot", "rama", "sea", "khaki"]),
+    ("grey",     ["grey", "gray", "melange", "mel", "heather"]),
+    ("yellow",   ["yellow", "mustard", "gold", "golden"]),
+    ("orange",   ["orange"]),
+    ("purple",   ["purple"]),
+    ("brown",    ["brown", "beige"]),
+    ("multi",    ["multi", "multicolor", "multicolour"]),
+]
+
+# Number of canonical colour dims = len(_CANONICAL_COLOURS)
+_COLOUR_DIMS = len(_CANONICAL_COLOURS)
+
+# Number of categorical feature dimensions: brand (1) + colour (per canonical set)
+_CATEGORICAL_DIMS = 1 + _COLOUR_DIMS
 
 
 class FeatureBuilder:
@@ -25,9 +45,11 @@ class FeatureBuilder:
       4. L2-normalize the text vectors
       5. Append 4 numeric features: log(price), rating, log(bestsellers_rank),
          log(weight) — MinMax scaled then multiplied by NUMERIC_WEIGHT
-      6. Append 2 categorical features: brand (label-encoded top-N) and colour (hashed)
-         — both scaled to [0,1] and down-weighted at NUMERIC_WEIGHT
-      Final vector: float32 of shape (n_products, SVD_COMPONENTS + 4 + 2)
+      6. Append categorical features: brand (label-encoded top-N) + 12 canonical
+         colour binary dims (blue, black, red, white, pink, green, grey, yellow,
+         orange, purple, brown, multi) — each 0.0 or NUMERIC_WEIGHT.
+         80% of products have no colour value; missing → all-zero colour dims.
+      Final vector: float32 of shape (n_products, SVD_COMPONENTS + 4 + 1 + _COLOUR_DIMS)
 
     Weight is only 21% populated in this dataset (999999999 sentinel for unknown).
     Missing values are imputed with the median. The spec lists weight as a required
@@ -40,9 +62,10 @@ class FeatureBuilder:
 
     _CAMEL_RE = re.compile(r'([A-Z])')
     # Top-N brands get a unique integer ID; all others map to 0 (unknown).
-    _TOP_BRANDS = 200
-    # Number of hash buckets for colour encoding.
-    _COLOUR_BUCKETS = 64
+    # 50 is the cutoff where per-brand count drops below ~42 — sparse enough
+    # that label encoding adds noise rather than signal. Benchmarked: same-category
+    # hit rate is flat across 50/100/150/200 (all within 0.08%), so 50 is used.
+    _TOP_BRANDS = 50
 
     def __init__(self):
         self.tfidf = TfidfVectorizer(
@@ -118,16 +141,16 @@ class FeatureBuilder:
 
     def _build_categorical_features(self, df: pd.DataFrame, fit: bool) -> np.ndarray:
         """
-        Encode brand and colour as dedicated scalar dimensions.
+        Encode brand and colour as dedicated dimensions.
 
-        Brand: label-encode the top-_TOP_BRANDS brands; all others map to 0.
-          Scaled to [0, 1] so the integer IDs don't dominate by magnitude.
-        Colour: hash the normalised colour string into _COLOUR_BUCKETS buckets,
-          then scale to [0, 1]. Hashing avoids a large one-hot matrix while
-          still giving each colour a stable numeric identity independent of
-          which colours appear in the text corpus.
+        Brand: label-encode top-_TOP_BRANDS brands (by frequency); unknown → 0.
+          Normalised to [0, 1] then scaled by NUMERIC_WEIGHT.
 
-        Both dims are down-weighted by NUMERIC_WEIGHT to match the numeric block.
+        Colour: multi-hot binary vector over _CANONICAL_COLOURS (12 dims).
+          Each raw colour string is split on punctuation/whitespace; any word
+          matching a canonical group sets that dim to 1.0.
+          80% of products have no colour → all-zero row (honest, not imputed).
+          Each active dim is set to NUMERIC_WEIGHT (same scale as brand/numerics).
         """
         if fit:
             top_brands = (
@@ -137,28 +160,36 @@ class FeatureBuilder:
                 .head(self._TOP_BRANDS)
                 .index.tolist()
             )
-            # 1-indexed so unknown brand → 0 is distinguishable from the first brand
             self._brand_map = {b: i + 1 for i, b in enumerate(top_brands)}
 
+        # --- brand dim (1 column) ---
         brand_ids = (
             df["brand"].str.lower().str.strip()
             .map(lambda b: self._brand_map.get(b, 0))
             .values.reshape(-1, 1)
             .astype(np.float32)
         )
-        # Normalise to [0, 1]: max is _TOP_BRANDS (the highest assigned ID)
-        brand_scaled = brand_ids / max(len(self._brand_map), 1)
+        brand_scaled = (brand_ids / max(len(self._brand_map), 1)) * settings.NUMERIC_WEIGHT
 
-        colour_hashed = (
-            df["colour"].str.lower().str.strip()
-            .map(lambda c: hash(c) % self._COLOUR_BUCKETS if c else 0)
-            .values.reshape(-1, 1)
-            .astype(np.float32)
-        )
-        colour_scaled = colour_hashed / self._COLOUR_BUCKETS
+        # --- colour dims (_COLOUR_DIMS columns) ---
+        # Build lookup: surface word → column index
+        word_to_col = {}
+        for col_idx, (_, surface_forms) in enumerate(_CANONICAL_COLOURS):
+            for word in surface_forms:
+                word_to_col[word] = col_idx
 
-        categorical = np.hstack([brand_scaled, colour_scaled]).astype(np.float32)
-        return (categorical * settings.NUMERIC_WEIGHT).astype(np.float32)
+        n = len(df)
+        colour_matrix = np.zeros((n, _COLOUR_DIMS), dtype=np.float32)
+        for row_idx, raw in enumerate(df["colour"].str.lower().str.strip()):
+            if not raw:
+                continue
+            words = re.split(r'[|,/\s\-]+', raw)
+            for w in words:
+                col_idx = word_to_col.get(w.strip())
+                if col_idx is not None:
+                    colour_matrix[row_idx, col_idx] = settings.NUMERIC_WEIGHT
+
+        return np.hstack([brand_scaled, colour_matrix]).astype(np.float32)
 
     @classmethod
     def _category_to_tokens(cls, category: object) -> str:

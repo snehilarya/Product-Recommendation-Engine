@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     NUMERIC_WEIGHT: float = 0.3
     # Increment when the feature schema changes (e.g. adding/removing a feature
     # column) to force a cache rebuild even if other numeric params are unchanged.
-    FEATURE_VERSION: int = 3
+    FEATURE_VERSION: int = 5
     HNSW_M: int = 16
     HNSW_EF_CONSTRUCTION: int = 200
     HNSW_EF_QUERY: int = 50

@@ -50,8 +50,9 @@ class TestFeatureBuilder:
 
     def test_output_shape_is_correct(self, df, built_features):
         from similarity.config import settings
+        from similarity.feature_builder import _COLOUR_DIMS
         feature_matrix, builder = built_features
-        expected_dims = settings.SVD_COMPONENTS + 4 + 2  # text + numeric (4) + categorical (2)
+        expected_dims = settings.SVD_COMPONENTS + 4 + 1 + _COLOUR_DIMS  # text + numeric + brand + colours
         assert feature_matrix.shape == (len(df), expected_dims)
 
     def test_output_dtype_is_float32(self, df, built_features):
