@@ -4,7 +4,7 @@ A FastAPI microservice that returns similar Amazon fashion products given a prod
 
 ## How it works
 
-At startup the service loads ~25k Amazon fashion products (30k raw records minus ~5k near-duplicate SKUs removed at load time) and builds a vector index in memory. Here's the full pipeline:
+At startup the service loads ~26k Amazon fashion products (30k raw records minus ~4k near-duplicate SKUs removed at load time) and builds a vector index in memory. Here's the full pipeline:
 
 1. **Text features** — product name, brand, colour, and "customers also bought" text are concatenated into one string per product. We also inject the product's Amazon category label (e.g. "WomensKurtasKurtis") repeated 5 times — this turned out to be the biggest single accuracy improvement, taking same-category hit rate from 80% to 96%. Everything goes through TF-IDF (5000-token vocabulary).
 
@@ -60,7 +60,7 @@ Returns a list of similar product IDs.
 
 ```bash
 curl "http://localhost:8000/find_similar_products?product_id=26d41bdc1495de290bc8e6062d927729&num_similar=5"
-# ["abc123...", "def456...", ...]
+# [{"product_id": "abc123...", "similarity_score": 0.9308}, ...]
 ```
 
 **404** if the product ID isn't in the dataset. **422** if `num_similar` is out of range. **503** if the server is handling too many requests at once — just retry.
@@ -69,7 +69,7 @@ curl "http://localhost:8000/find_similar_products?product_id=26d41bdc1495de290bc
 
 ```bash
 curl http://localhost:8000/health
-# {"status": "ok", "products_loaded": 24777}
+# {"status": "ok", "products_loaded": 25855}
 ```
 
 Use this as the Kubernetes liveness/readiness probe. It returns `products_loaded: 0` if the engine hasn't finished initializing yet.
@@ -84,7 +84,7 @@ Interactive docs at `http://localhost:8000/docs` once the server is running.
 pytest tests/ -v
 ```
 
-31 tests covering: data loading and cleaning (including weight sentinel handling), feature pipeline (shape, dtype, no NaN/inf), HNSW index behaviour, engine caching, API endpoints (200/404/422/503), and latency (cached query < 1ms, HNSW query < 50ms).
+33 tests covering: data loading and cleaning (including weight sentinel handling), feature pipeline (shape, dtype, no NaN/inf), HNSW index behaviour, engine caching, API endpoints (200/404/422/503), and latency (cached query < 1ms, HNSW query < 50ms).
 
 ## Architecture decisions
 
