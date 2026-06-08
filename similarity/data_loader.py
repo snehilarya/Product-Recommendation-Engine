@@ -70,7 +70,7 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
     df["_dedup_key"] = (
         df["product_name"].str.lower().str.strip() + "|" +
         df["sales_price"].astype(str) + "|" +
-        df["brand"].apply(lambda b: b.lower().strip() if b else "__unknown__" + str(id(b)))
+        [b.lower().strip() if b else f"__unknown_{i}" for i, b in enumerate(df["brand"])]
     )
     df = df.drop_duplicates(subset=["_dedup_key"]).drop(columns=["_dedup_key"])
     removed = before_dedup - len(df)

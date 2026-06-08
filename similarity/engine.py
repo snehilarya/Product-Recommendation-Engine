@@ -36,6 +36,7 @@ def _config_hash() -> str:
         f"_w={settings.NUMERIC_WEIGHT}"
         f"_M={settings.HNSW_M}"
         f"_ef={settings.HNSW_EF_CONSTRUCTION}"
+        f"_cat={settings.CATEGORY_TOKEN_REPEAT}"
     )
     return hashlib.md5(key.encode()).hexdigest()[:8]
 

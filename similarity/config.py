@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     HNSW_M: int = 16
     HNSW_EF_CONSTRUCTION: int = 200
     HNSW_EF_QUERY: int = 50
+    CATEGORY_TOKEN_REPEAT: int = 5
 
     # Price band filter — candidates outside this range of the query price are dropped.
     # e.g. 0.33/3.0 means a $500 watch only returns products between ~$167 and $1500.

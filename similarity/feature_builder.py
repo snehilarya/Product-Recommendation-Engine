@@ -112,7 +112,7 @@ class FeatureBuilder:
         if not category or not isinstance(category, str):
             return ""
         words = cls._CAMEL_RE.sub(r' \1', category).strip().lower()
-        return (words + " ") * 5
+        return (words + " ") * settings.CATEGORY_TOKEN_REPEAT
 
     def save(self, path: str) -> None:
         """Pickle the fitted transformers (TF-IDF, SVD, scaler, medians)."""

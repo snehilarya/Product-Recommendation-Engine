@@ -4,7 +4,7 @@ A FastAPI microservice that returns similar Amazon fashion products given a prod
 
 ## How it works
 
-At startup the service loads ~30k Amazon fashion products and builds a vector index in memory. Here's the full pipeline:
+At startup the service loads ~25k Amazon fashion products (30k raw records minus ~5k near-duplicate SKUs removed at load time) and builds a vector index in memory. Here's the full pipeline:
 
 1. **Text features** — product name, brand, colour, and "customers also bought" text are concatenated into one string per product. We also inject the product's Amazon category label (e.g. "WomensKurtasKurtis") repeated 5 times — this turned out to be the biggest single accuracy improvement, taking same-category hit rate from 80% to 96%. Everything goes through TF-IDF (5000-token vocabulary).
 
@@ -34,7 +34,7 @@ pip install -r requirements.txt
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-First startup takes about 2–3 seconds to build the index and saves it to `.index_cache/`. Every restart after that loads from disk and is ready in ~50ms instead. The cache directory is versioned by config hash — if you change `SVD_COMPONENTS` or `NUMERIC_WEIGHT`, the app automatically detects the mismatch and rebuilds.
+First startup takes about 2–3 seconds to build the index and saves it to `.index_cache/`. Every restart after that loads from disk and is ready in ~1 second instead. The cache directory is versioned by config hash — if you change `SVD_COMPONENTS`, `NUMERIC_WEIGHT`, `HNSW_M`, `HNSW_EF_CONSTRUCTION`, or `FEATURE_VERSION`, the app automatically detects the mismatch and rebuilds.
 
 > **Kubernetes note:** `.index_cache/` is written to the container's local filesystem. In K8s, pod recreation (deploys, node rescheduling, OOM kills) wipes the local filesystem — the fast-load path only applies to in-place restarts. To benefit from caching across pod recreations, mount a `PersistentVolumeClaim` at the path set by the `CACHE_DIR` environment variable.
 
@@ -69,7 +69,7 @@ curl "http://localhost:8000/find_similar_products?product_id=26d41bdc1495de290bc
 
 ```bash
 curl http://localhost:8000/health
-# {"status": "ok", "products_loaded": 30000}
+# {"status": "ok", "products_loaded": 24777}
 ```
 
 Use this as the Kubernetes liveness/readiness probe. It returns `products_loaded: 0` if the engine hasn't finished initializing yet.
@@ -84,7 +84,7 @@ Interactive docs at `http://localhost:8000/docs` once the server is running.
 pytest tests/ -v
 ```
 
-30 tests covering: data loading and cleaning (including weight sentinel handling), feature pipeline (shape, dtype, no NaN/inf), HNSW index behaviour, engine caching, API endpoints (200/404/422/503), and latency (cached query < 1ms, HNSW query < 50ms).
+31 tests covering: data loading and cleaning (including weight sentinel handling), feature pipeline (shape, dtype, no NaN/inf), HNSW index behaviour, engine caching, API endpoints (200/404/422/503), and latency (cached query < 1ms, HNSW query < 50ms).
 
 ## Architecture decisions
 
