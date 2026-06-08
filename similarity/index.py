@@ -52,19 +52,21 @@ class SimilarityIndex:
         """
         Find k nearest neighbors of vector, excluding exclude_index.
 
+        Returns list of (row_index, cosine_distance) tuples sorted by
+        ascending distance (most similar first).
         We fetch k+1 to ensure we have k results after removing the
         query product itself (which HNSW may or may not return as top-1).
         """
         query_vector = vector.reshape(1, -1)
-        labels, _distances = self.index.knn_query(query_vector, k=k + 1)
+        labels, distances = self.index.knn_query(query_vector, k=k + 1)
 
-        neighbor_indices = []
-        for label in labels[0]:
+        neighbors = []
+        for label, dist in zip(labels[0], distances[0]):
             row_index = int(label)
             if row_index != exclude_index:
-                neighbor_indices.append(row_index)
+                neighbors.append((row_index, float(dist)))
 
-        return neighbor_indices[:k]
+        return neighbors[:k]
 
     def save(self, path: str) -> None:
         """Persist the HNSW graph to disk."""

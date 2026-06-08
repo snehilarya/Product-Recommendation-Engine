@@ -108,7 +108,7 @@ class TestHNSWIndex:
         idx.build(feature_matrix)
 
         results = idx.query(vector=feature_matrix[0], k=10, exclude_index=0)
-        for row_index in results:
+        for row_index, dist in results:
             assert 0 <= row_index < len(df)
 
 
@@ -122,13 +122,25 @@ class TestEngine:
     def test_find_similar_excludes_query_product(self, first_product_id):
         import similarity.engine as engine
         results = engine.find_similar_products(first_product_id, num_similar=10)
-        assert first_product_id not in results
+        assert first_product_id not in [r["product_id"] for r in results]
 
     def test_find_similar_returns_valid_product_ids(self, first_product_id, id_to_index):
         import similarity.engine as engine
         results = engine.find_similar_products(first_product_id, num_similar=5)
-        for product_id in results:
-            assert product_id in id_to_index
+        for r in results:
+            assert r["product_id"] in id_to_index
+
+    def test_find_similar_has_similarity_score(self, first_product_id):
+        import similarity.engine as engine
+        results = engine.find_similar_products(first_product_id, num_similar=5)
+        for r in results:
+            assert 0.0 <= r["similarity_score"] <= 1.0
+
+    def test_similarity_scores_descending(self, first_product_id):
+        import similarity.engine as engine
+        results = engine.find_similar_products(first_product_id, num_similar=5)
+        scores = [r["similarity_score"] for r in results]
+        assert scores == sorted(scores, reverse=True)
 
     def test_unknown_product_id_raises_key_error(self):
         import similarity.engine as engine
@@ -155,8 +167,8 @@ class TestEngine:
 
         results = engine.find_similar_products(query_id, num_similar=10)
 
-        for result_id in results:
-            result_price = df.loc[id_to_index[result_id], "sales_price"]
+        for r in results:
+            result_price = df.loc[id_to_index[r["product_id"]], "sales_price"]
             if result_price is None or (isinstance(result_price, float) and np.isnan(result_price)):
                 continue  # unknown price — always allowed through
             ratio = result_price / query_price
@@ -196,8 +208,9 @@ class TestAPI:
             "/find_similar_products",
             params={"product_id": first_product_id, "num_similar": 3}
         )
-        for product_id in response.json():
-            assert isinstance(product_id, str)
+        for item in response.json():
+            assert isinstance(item["product_id"], str)
+            assert 0.0 <= item["similarity_score"] <= 1.0
 
     def test_unknown_product_returns_404(self, client):
         response = client.get(

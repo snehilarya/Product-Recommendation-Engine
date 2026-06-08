@@ -180,7 +180,8 @@ def _cache_set(key: str, value):
 
 def find_similar_products(product_id: str, num_similar: int) -> list:
     """
-    Return a list of num_similar product IDs most similar to product_id.
+    Return a list of dicts with 'product_id' and 'similarity_score' (0–1,
+    higher is more similar) for the num_similar products closest to product_id.
 
     Results are cached by (product_id, num_similar) — repeated identical
     queries return instantly without hitting the HNSW index.
@@ -210,6 +211,7 @@ def _compute_similar(product_id: str, num_similar: int) -> list:
     query_vector = _features[query_row_index]
     query_price = _prices[query_row_index]
 
+    # candidates: list of (row_index, cosine_distance)
     candidates = _hnsw_index.query(
         vector=query_vector,
         k=num_similar * 5,
@@ -221,7 +223,12 @@ def _compute_similar(product_id: str, num_similar: int) -> list:
     if len(filtered) < num_similar:
         filtered = candidates
 
-    return [_index_to_id[i] for i in filtered[:num_similar]]
+    # hnswlib cosine space returns distance (0=identical, 2=opposite).
+    # Convert to similarity score: 1 - distance/2, clamped to [0, 1].
+    return [
+        {"product_id": _index_to_id[i], "similarity_score": round(1.0 - dist / 2.0, 4)}
+        for i, dist in filtered[:num_similar]
+    ]
 
 
 def _ensure_data_file(data_path: str) -> None:
@@ -257,28 +264,25 @@ def _ensure_data_file(data_path: str) -> None:
     logger.info("Dataset ready.")
 
 
-def _filter_by_price_band(candidate_indices: list, query_price: float) -> list:
+def _filter_by_price_band(candidates: list, query_price: float) -> list:
     """
     Remove candidates whose price is more than the configured tolerance
     higher or lower than the query product's price.
 
-    A $500 watch with PRICE_TOLERANCE_UPPER=3.0 keeps results in the
-    ~$167–$1500 range, preventing a $15 plastic watch from ranking above
-    a $450 leather one just because they share the words 'black' and 'watch'.
-
+    candidates is a list of (row_index, cosine_distance) tuples.
     Products with unknown price (NaN) are always kept.
     If the query product itself has no price, filtering is skipped entirely.
     """
     if np.isnan(query_price):
-        return candidate_indices
+        return candidates
 
     result = []
-    for row_index in candidate_indices:
+    for row_index, dist in candidates:
         candidate_price = _prices[row_index]
         if np.isnan(candidate_price):
-            result.append(row_index)
+            result.append((row_index, dist))
             continue
         ratio = candidate_price / query_price
         if settings.PRICE_TOLERANCE_LOWER <= ratio <= settings.PRICE_TOLERANCE_UPPER:
-            result.append(row_index)
+            result.append((row_index, dist))
     return result

@@ -5,6 +5,7 @@ from typing import List
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 import similarity.engine as engine
 from similarity.config import settings
@@ -54,21 +55,27 @@ async def concurrency_limit(request: Request, call_next):
     return await call_next(request)
 
 
+class SimilarProduct(BaseModel):
+    product_id: str
+    similarity_score: float
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "products_loaded": engine.product_count()}
 
 
-@app.get("/find_similar_products", response_model=List[str])
+@app.get("/find_similar_products", response_model=List[SimilarProduct])
 def find_similar_products(
     product_id: str,
     num_similar: int = Query(default=5, ge=1, le=200)
-) -> List[str]:
+) -> List[SimilarProduct]:
     """
     Return the num_similar most similar products to the given product_id.
 
     - product_id: uniq_id from the dataset
     - num_similar: how many similar products to return (1–200)
+    - similarity_score: 0–1, higher means more similar
     """
     try:
         return engine.find_similar_products(product_id, num_similar)
