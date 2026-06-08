@@ -50,8 +50,9 @@ class TestFeatureBuilder:
 
     def test_output_shape_is_correct(self, df, built_features):
         from similarity.config import settings
+        from similarity.feature_builder import _COLOUR_DIMS
         feature_matrix, builder = built_features
-        expected_dims = settings.SVD_COMPONENTS + 4  # text + price + rating + bsr + weight
+        expected_dims = settings.SVD_COMPONENTS + 4 + 1 + _COLOUR_DIMS  # text + numeric + brand + colours
         assert feature_matrix.shape == (len(df), expected_dims)
 
     def test_output_dtype_is_float32(self, df, built_features):
@@ -66,8 +67,9 @@ class TestFeatureBuilder:
     def test_numeric_features_are_scaled(self, built_features):
         from similarity.config import settings
         feature_matrix, _ = built_features
-        # last 2 cols are MinMaxScaled then multiplied by NUMERIC_WEIGHT
-        numeric_part = feature_matrix[:, -2:]
+        # numeric block sits at [SVD_COMPONENTS : SVD_COMPONENTS+4] — explicit slice
+        # avoids grabbing categorical dims that happen to share the same scale
+        numeric_part = feature_matrix[:, settings.SVD_COMPONENTS : settings.SVD_COMPONENTS + 4]
         assert numeric_part.min() >= 0.0
         assert numeric_part.max() <= settings.NUMERIC_WEIGHT + 1e-5
 

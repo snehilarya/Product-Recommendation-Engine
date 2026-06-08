@@ -66,11 +66,16 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
     # known) is almost certainly the same item listed by multiple sellers.
     # We require brand to be non-empty before including it in the key — two products
     # with null brand, same name, and same price may be genuinely different items.
+    # Note: brand is already filled to "" by this point, so we check .strip() to detect
+    # empty brands and assign a row-unique sentinel so they are never incorrectly deduped.
     before_dedup = len(df)
-    df["_dedup_key"] = (
-        df["product_name"].str.lower().str.strip() + "|" +
-        df["sales_price"].astype(str) + "|" +
-        df["brand"].apply(lambda b: b.lower().strip() if b else "__unknown__" + str(id(b)))
+    df["_dedup_key"] = df.apply(
+        lambda row: (
+            row["product_name"].lower().strip() + "|" +
+            str(row["sales_price"]) + "|" +
+            (row["brand"].lower().strip() if row["brand"].strip() else f"__unknown_{row.name}__")
+        ),
+        axis=1
     )
     df = df.drop_duplicates(subset=["_dedup_key"]).drop(columns=["_dedup_key"])
     removed = before_dedup - len(df)

@@ -2,6 +2,7 @@ import hashlib
 import logging
 import os
 import pickle
+import threading
 import zipfile
 from typing import Optional
 
@@ -17,6 +18,7 @@ _index_to_id: Optional[list] = None
 _features: Optional[np.ndarray] = None
 _prices: Optional[np.ndarray] = None   # sales_price per row index, NaN if missing
 _hnsw_index = None
+_df = None  # full cleaned DataFrame, kept for test fixtures
 
 # Cache file names written inside settings.CACHE_DIR
 _CACHE_INDEX_FILE    = "hnsw_index.bin"
@@ -58,7 +60,7 @@ def initialize(data_path: str) -> None:
 
     Set CACHE_DIR='' to disable caching (always rebuild).
     """
-    global _id_to_index, _index_to_id, _features, _prices, _hnsw_index
+    global _id_to_index, _index_to_id, _features, _prices, _hnsw_index, _df
 
     from similarity.data_loader import load_products
     from similarity.feature_builder import FeatureBuilder
@@ -71,6 +73,7 @@ def initialize(data_path: str) -> None:
 
     logger.info(f"Loading products from {data_path}...")
     df, _id_to_index, _index_to_id = load_products(data_path)
+    _df = df
     logger.info(f"Loaded {len(df)} products.")
 
     _prices = df["sales_price"].values.astype(float)
@@ -95,7 +98,7 @@ def _try_load_from_cache() -> bool:
     If the config changed (different hash), the old cache dir won't exist
     and a fresh build is triggered automatically.
     """
-    global _id_to_index, _index_to_id, _features, _prices, _hnsw_index
+    global _id_to_index, _index_to_id, _features, _prices, _hnsw_index, _df
 
     cache_dir = _cache_dir()
     if not cache_dir:
@@ -119,6 +122,7 @@ def _try_load_from_cache() -> bool:
         _index_to_id = meta["index_to_id"]
         _prices      = meta["prices"]
         _features    = meta["features"]
+        _df          = meta.get("df")   # None for caches built before this field was added
 
         _hnsw_index = SimilarityIndex.load(
             index_path,
@@ -151,6 +155,7 @@ def _save_to_cache(builder) -> None:
             "index_to_id": _index_to_id,
             "prices":      _prices,
             "features":    _features,
+            "df":          _df,
         }, f)
 
     logger.info("Index cache saved.")
@@ -165,16 +170,19 @@ def product_count() -> int:
 # Repeated identical queries return instantly without hitting the HNSW index.
 _CACHE_MAX = 10_000
 _cache: dict = {}
+_cache_lock = threading.Lock()
 
 
 def _cache_get(key: str):
-    return _cache.get(key)
+    with _cache_lock:
+        return _cache.get(key)
 
 
 def _cache_set(key: str, value):
-    if len(_cache) >= _CACHE_MAX:
-        del _cache[next(iter(_cache))]
-    _cache[key] = value
+    with _cache_lock:
+        if len(_cache) >= _CACHE_MAX:
+            del _cache[next(iter(_cache))]
+        _cache[key] = value
 
 
 def find_similar_products(product_id: str, num_similar: int) -> list:
@@ -218,6 +226,11 @@ def _compute_similar(product_id: str, num_similar: int) -> list:
     filtered = _filter_by_price_band(candidates, query_price)
 
     if len(filtered) < num_similar:
+        logger.debug(
+            "Price-band filter left %d/%d candidates for product '%s' (price=%.2f); "
+            "falling back to unfiltered HNSW results.",
+            len(filtered), num_similar, product_id, query_price if not np.isnan(query_price) else float("nan")
+        )
         filtered = candidates
 
     return [_index_to_id[i] for i in filtered[:num_similar]]
