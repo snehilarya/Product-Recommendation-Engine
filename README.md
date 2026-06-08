@@ -55,7 +55,7 @@ docker run -p 8000:8000 similarity-search
 
 ### `GET /find_similar_products`
 
-Returns a list of similar product IDs.
+Returns a ranked list of similar products with similarity scores.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -64,8 +64,15 @@ Returns a list of similar product IDs.
 
 ```bash
 curl "http://localhost:8000/find_similar_products?product_id=26d41bdc1495de290bc8e6062d927729&num_similar=5"
-# [{"product_id": "abc123...", "similarity_score": 0.9308}, ...]
+# [{"product_id": "abc123...", "similarity_score": 0.93}, ...]
 ```
+
+Each result object:
+
+| Field | Type | Description |
+|---|---|---|
+| `product_id` | string | `uniq_id` of the similar product |
+| `similarity_score` | float | Cosine similarity in [0, 1] — higher means more similar |
 
 **404** if the product ID isn't in the dataset. **422** if `num_similar` is out of range. **503** if the server is handling too many requests at once — just retry.
 
