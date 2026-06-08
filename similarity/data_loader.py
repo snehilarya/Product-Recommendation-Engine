@@ -1,8 +1,11 @@
 import json
+import logging
 import re
 from typing import Optional
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def load_products(path: str):
@@ -15,6 +18,7 @@ def load_products(path: str):
         index_to_id: list mapping row index (int) -> product_id (str)
     """
     records = []
+    failed = 0
     with open(path, encoding="utf-8") as file:
         for line in file:
             line = line.strip()
@@ -23,7 +27,12 @@ def load_products(path: str):
             try:
                 records.append(json.loads(line))
             except json.JSONDecodeError:
-                continue
+                failed += 1
+
+    total = len(records) + failed
+    if failed:
+        logger.warning(f"Skipped {failed}/{total} malformed records ({100*failed/total:.1f}%)")
+    logger.info(f"Parsed {len(records)}/{total} records successfully")
 
     df = pd.DataFrame(records)
     df = _clean(df)
@@ -35,12 +44,13 @@ def load_products(path: str):
 
 
 def _clean(df: pd.DataFrame) -> pd.DataFrame:
+    before = len(df)
     df = df.dropna(subset=["uniq_id"])
     df = df.drop_duplicates(subset=["uniq_id"])
 
-    df["weight"] = df["weight"].apply(_parse_weight)
     df["sales_price"] = df["sales_price"].apply(_parse_price)
     df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
+    df["weight"] = df["weight"].apply(_parse_weight)
     df["bestsellers_rank"] = df["product_details__k_v_pairs"].apply(_extract_rank)
     df["child_category"] = df["parent___child_category__all"].apply(_extract_child_category)
 
@@ -52,25 +62,24 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df[col] = ""
 
+    # Remove near-duplicate SKUs: same product name + price + brand (when brand is
+    # known) is almost certainly the same item listed by multiple sellers.
+    # We require brand to be non-empty before including it in the key — two products
+    # with null brand, same name, and same price may be genuinely different items.
+    before_dedup = len(df)
+    df["_dedup_key"] = (
+        df["product_name"].str.lower().str.strip() + "|" +
+        df["sales_price"].astype(str) + "|" +
+        [b.lower().strip() if b else f"__unknown_{i}" for i, b in enumerate(df["brand"])]
+    )
+    df = df.drop_duplicates(subset=["_dedup_key"]).drop(columns=["_dedup_key"])
+    removed = before_dedup - len(df)
+    if removed:
+        logger.info(f"Removed {removed} near-duplicate SKUs (same name+price+brand)")
+
+    after = len(df)
+    logger.info(f"Clean complete: {before} → {after} products")
     return df.reset_index(drop=True)
-
-
-def _parse_weight(value) -> Optional[float]:
-    """
-    Parse weight string. Returns None for the sentinel value 999999999
-    which the dataset uses to indicate 'unknown weight'.
-    """
-    if value is None:
-        return None
-    try:
-        # weight field can be "86.2 g" or "999999999" — take the numeric part
-        numeric_part = str(value).split()[0].replace(",", "")
-        parsed = float(numeric_part)
-        if parsed >= 999999999:
-            return None
-        return parsed
-    except (ValueError, IndexError):
-        return None
 
 
 def _parse_price(value) -> Optional[float]:
@@ -80,6 +89,22 @@ def _parse_price(value) -> Optional[float]:
     try:
         return float(str(value).replace(",", "").strip())
     except ValueError:
+        return None
+
+
+def _parse_weight(value) -> Optional[float]:
+    """
+    Parse weight string like '86.2 g' to float. Returns None for the sentinel
+    value 999999999 the dataset uses to indicate unknown weight.
+    Only 21% of products have a real weight value; the rest are NaN after this.
+    """
+    if value is None:
+        return None
+    try:
+        numeric_part = str(value).split()[0].replace(",", "")
+        parsed = float(numeric_part)
+        return None if parsed >= 999999999 else parsed
+    except (ValueError, IndexError):
         return None
 
 

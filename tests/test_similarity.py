@@ -20,11 +20,6 @@ class TestDataLoader:
     def test_no_duplicate_unique_ids(self, id_to_index, index_to_id):
         assert len(id_to_index) == len(index_to_id)
 
-    def test_weight_sentinel_is_null(self, df):
-        # 999999999 is a placeholder for unknown weight — must be None/NaN
-        real_weights = df["weight"].dropna()
-        assert (real_weights >= 1e9).sum() == 0
-
     def test_id_to_index_maps_correctly(self, id_to_index, index_to_id):
         first_id = index_to_id[0]
         assert id_to_index[first_id] == 0
@@ -33,6 +28,11 @@ class TestDataLoader:
         # null-filled to empty string so TF-IDF concat doesn't break
         assert df["brand"].isna().sum() == 0
         assert df["colour"].isna().sum() == 0
+
+    def test_weight_sentinel_cleaned(self, df):
+        # 999999999 sentinel must be converted to NaN — no real product weighs 1B grams
+        real_weights = df["weight"].dropna()
+        assert (real_weights >= 999999999).sum() == 0
 
     def test_bestsellers_rank_extracted(self, df):
         # 83% of products have a rank in product_details — spot-check it's numeric
@@ -51,7 +51,7 @@ class TestFeatureBuilder:
     def test_output_shape_is_correct(self, df, built_features):
         from similarity.config import settings
         feature_matrix, builder = built_features
-        expected_dims = settings.SVD_COMPONENTS + 3  # text dims + price + rating + bsr
+        expected_dims = settings.SVD_COMPONENTS + 4  # text + price + rating + bsr + weight
         assert feature_matrix.shape == (len(df), expected_dims)
 
     def test_output_dtype_is_float32(self, df, built_features):
@@ -108,7 +108,7 @@ class TestHNSWIndex:
         idx.build(feature_matrix)
 
         results = idx.query(vector=feature_matrix[0], k=10, exclude_index=0)
-        for row_index in results:
+        for row_index, dist in results:
             assert 0 <= row_index < len(df)
 
 
@@ -122,13 +122,25 @@ class TestEngine:
     def test_find_similar_excludes_query_product(self, first_product_id):
         import similarity.engine as engine
         results = engine.find_similar_products(first_product_id, num_similar=10)
-        assert first_product_id not in results
+        assert first_product_id not in [r["product_id"] for r in results]
 
     def test_find_similar_returns_valid_product_ids(self, first_product_id, id_to_index):
         import similarity.engine as engine
         results = engine.find_similar_products(first_product_id, num_similar=5)
-        for product_id in results:
-            assert product_id in id_to_index
+        for r in results:
+            assert r["product_id"] in id_to_index
+
+    def test_find_similar_has_similarity_score(self, first_product_id):
+        import similarity.engine as engine
+        results = engine.find_similar_products(first_product_id, num_similar=5)
+        for r in results:
+            assert 0.0 <= r["similarity_score"] <= 1.0
+
+    def test_similarity_scores_descending(self, first_product_id):
+        import similarity.engine as engine
+        results = engine.find_similar_products(first_product_id, num_similar=5)
+        scores = [r["similarity_score"] for r in results]
+        assert scores == sorted(scores, reverse=True)
 
     def test_unknown_product_id_raises_key_error(self):
         import similarity.engine as engine
@@ -155,8 +167,8 @@ class TestEngine:
 
         results = engine.find_similar_products(query_id, num_similar=10)
 
-        for result_id in results:
-            result_price = df.loc[id_to_index[result_id], "sales_price"]
+        for r in results:
+            result_price = df.loc[id_to_index[r["product_id"]], "sales_price"]
             if result_price is None or (isinstance(result_price, float) and np.isnan(result_price)):
                 continue  # unknown price — always allowed through
             ratio = result_price / query_price
@@ -196,8 +208,9 @@ class TestAPI:
             "/find_similar_products",
             params={"product_id": first_product_id, "num_similar": 3}
         )
-        for product_id in response.json():
-            assert isinstance(product_id, str)
+        for item in response.json():
+            assert isinstance(item["product_id"], str)
+            assert 0.0 <= item["similarity_score"] <= 1.0
 
     def test_unknown_product_returns_404(self, client):
         response = client.get(
@@ -212,6 +225,27 @@ class TestAPI:
             params={"product_id": first_product_id, "num_similar": 0}
         )
         assert response.status_code == 422
+
+    def test_busy_server_returns_503(self, first_product_id):
+        # Exhaust the semaphore manually then verify the middleware returns 503
+        import app as app_module
+        # Drain all slots
+        acquired = []
+        for _ in range(app_module._MAX_CONCURRENT):
+            if app_module._semaphore.acquire(blocking=False):
+                acquired.append(True)
+        try:
+            from fastapi.testclient import TestClient
+            from app import app
+            with TestClient(app, raise_server_exceptions=False) as c:
+                response = c.get(
+                    "/find_similar_products",
+                    params={"product_id": first_product_id, "num_similar": 5}
+                )
+            assert response.status_code == 503
+        finally:
+            for _ in acquired:
+                app_module._semaphore.release()
 
 
 class TestPerformance:

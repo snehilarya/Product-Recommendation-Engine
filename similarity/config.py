@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # App Config — override with DATA_PATH env var in Docker/Kubernetes
     DATA_PATH: str = _DEFAULT_DATA_PATH
     ZIP_PATH: str = _DEFAULT_ZIP_PATH
+    # Cache config
+    # Directory where the built index and pipeline are cached between restarts.
+    # Set to an empty string to disable caching (always rebuild from scratch).
+    CACHE_DIR: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".index_cache")
 
     # ML Pipeline Config
     # SVD_COMPONENTS=75 captures 34% text variance vs 29% at 50; marginal gain
@@ -28,9 +32,13 @@ class Settings(BaseSettings):
     # NUMERIC_WEIGHT scales [price, rating] dims relative to L2-normed text dims.
     # 0.3 gives same-category hit rate of 80.2% vs 75.3% at w=1.0 (measured).
     NUMERIC_WEIGHT: float = 0.3
+    # Increment when the feature schema changes (e.g. adding/removing a feature
+    # column) to force a cache rebuild even if other numeric params are unchanged.
+    FEATURE_VERSION: int = 2
     HNSW_M: int = 16
     HNSW_EF_CONSTRUCTION: int = 200
     HNSW_EF_QUERY: int = 50
+    CATEGORY_TOKEN_REPEAT: int = 5
 
     # Price band filter — candidates outside this range of the query price are dropped.
     # e.g. 0.33/3.0 means a $500 watch only returns products between ~$167 and $1500.
