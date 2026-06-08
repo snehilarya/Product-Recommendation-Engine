@@ -9,6 +9,10 @@ from sklearn.preprocessing import MinMaxScaler, normalize
 
 from similarity.config import settings
 
+# Number of categorical feature dimensions appended after the numeric block.
+# brand (1 dim, label-encoded top-N) + colour (1 dim, hashed bucket).
+_CATEGORICAL_DIMS = 2
+
 
 class FeatureBuilder:
     """
@@ -21,7 +25,9 @@ class FeatureBuilder:
       4. L2-normalize the text vectors
       5. Append 4 numeric features: log(price), rating, log(bestsellers_rank),
          log(weight) — MinMax scaled then multiplied by NUMERIC_WEIGHT
-      Final vector: float32 of shape (n_products, SVD_COMPONENTS + 4)
+      6. Append 2 categorical features: brand (label-encoded top-N) and colour (hashed)
+         — both scaled to [0,1] and down-weighted at NUMERIC_WEIGHT
+      Final vector: float32 of shape (n_products, SVD_COMPONENTS + 4 + 2)
 
     Weight is only 21% populated in this dataset (999999999 sentinel for unknown).
     Missing values are imputed with the median. The spec lists weight as a required
@@ -33,6 +39,10 @@ class FeatureBuilder:
     """
 
     _CAMEL_RE = re.compile(r'([A-Z])')
+    # Top-N brands get a unique integer ID; all others map to 0 (unknown).
+    _TOP_BRANDS = 200
+    # Number of hash buckets for colour encoding.
+    _COLOUR_BUCKETS = 64
 
     def __init__(self):
         self.tfidf = TfidfVectorizer(
@@ -47,12 +57,15 @@ class FeatureBuilder:
         self._rating_median = None
         self._bsr_median = None
         self._weight_median = None
+        # Fitted brand → int mapping (top-N brands; unknown brand → 0)
+        self._brand_map: dict = {}
 
     def build(self, df: pd.DataFrame) -> np.ndarray:
         """Fit all transformers on df and return the full feature matrix."""
         text_features = self._build_text_features(df, fit=True)
         numeric_features = self._build_numeric_features(df, fit=True)
-        feature_matrix = np.hstack([text_features, numeric_features])
+        categorical_features = self._build_categorical_features(df, fit=True)
+        feature_matrix = np.hstack([text_features, numeric_features, categorical_features])
         return feature_matrix.astype(np.float32)
 
     def _build_text_features(self, df: pd.DataFrame, fit: bool) -> np.ndarray:
@@ -103,10 +116,54 @@ class FeatureBuilder:
         # Measured: w=0.3 gives 80% same-category hit rate vs 75% at w=1.0.
         return (scaled * settings.NUMERIC_WEIGHT).astype(np.float32)
 
+    def _build_categorical_features(self, df: pd.DataFrame, fit: bool) -> np.ndarray:
+        """
+        Encode brand and colour as dedicated scalar dimensions.
+
+        Brand: label-encode the top-_TOP_BRANDS brands; all others map to 0.
+          Scaled to [0, 1] so the integer IDs don't dominate by magnitude.
+        Colour: hash the normalised colour string into _COLOUR_BUCKETS buckets,
+          then scale to [0, 1]. Hashing avoids a large one-hot matrix while
+          still giving each colour a stable numeric identity independent of
+          which colours appear in the text corpus.
+
+        Both dims are down-weighted by NUMERIC_WEIGHT to match the numeric block.
+        """
+        if fit:
+            top_brands = (
+                df["brand"]
+                .str.lower().str.strip()
+                .value_counts()
+                .head(self._TOP_BRANDS)
+                .index.tolist()
+            )
+            # 1-indexed so unknown brand → 0 is distinguishable from the first brand
+            self._brand_map = {b: i + 1 for i, b in enumerate(top_brands)}
+
+        brand_ids = (
+            df["brand"].str.lower().str.strip()
+            .map(lambda b: self._brand_map.get(b, 0))
+            .values.reshape(-1, 1)
+            .astype(np.float32)
+        )
+        # Normalise to [0, 1]: max is _TOP_BRANDS (the highest assigned ID)
+        brand_scaled = brand_ids / max(len(self._brand_map), 1)
+
+        colour_hashed = (
+            df["colour"].str.lower().str.strip()
+            .map(lambda c: hash(c) % self._COLOUR_BUCKETS if c else 0)
+            .values.reshape(-1, 1)
+            .astype(np.float32)
+        )
+        colour_scaled = colour_hashed / self._COLOUR_BUCKETS
+
+        categorical = np.hstack([brand_scaled, colour_scaled]).astype(np.float32)
+        return (categorical * settings.NUMERIC_WEIGHT).astype(np.float32)
+
     @classmethod
     def _category_to_tokens(cls, category: object) -> str:
         """
-        Convert "WomensKurtasKurtis" → "womens kurtaskurtis " repeated 5 times.
+        Convert "WomensKurtasKurtis" → "womens kurtas kurtis " repeated 5 times.
         Repeated injection boosts TF-IDF weight for the category signal.
         """
         if not category or not isinstance(category, str):
@@ -115,7 +172,7 @@ class FeatureBuilder:
         return (words + " ") * 5
 
     def save(self, path: str) -> None:
-        """Pickle the fitted transformers (TF-IDF, SVD, scaler, medians)."""
+        """Pickle the fitted transformers (TF-IDF, SVD, scaler, medians, brand map)."""
         state = {
             "tfidf": self.tfidf,
             "svd": self.svd,
@@ -124,6 +181,7 @@ class FeatureBuilder:
             "rating_median": self._rating_median,
             "bsr_median": self._bsr_median,
             "weight_median": self._weight_median,
+            "brand_map": self._brand_map,
         }
         with open(path, "wb") as f:
             pickle.dump(state, f)
@@ -141,4 +199,5 @@ class FeatureBuilder:
         obj._rating_median = state["rating_median"]
         obj._bsr_median = state["bsr_median"]
         obj._weight_median = state.get("weight_median")  # graceful for older caches
+        obj._brand_map = state.get("brand_map", {})      # graceful for older caches
         return obj
