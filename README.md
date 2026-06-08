@@ -16,7 +16,9 @@ At startup the service loads ~30k Amazon fashion products and builds a vector in
 
 5. **Price band filter** — after HNSW returns candidates, we throw out anything priced more than 3× higher or lower than the query product. Prevents a ₹15 plastic watch from being recommended next to a ₹500 leather one just because both say "black" and "watch".
 
-6. **Query cache** — results are stored in a bounded in-process cache (capped at 10,000 entries, FIFO eviction). Repeated identical queries return instantly without hitting the HNSW index.
+6. **Near-duplicate removal** — products with the same name, brand, and price are deduplicated at load time. Without this, the same item listed multiple times under different seller IDs would fill all top-N slots.
+
+7. **Query cache** — results are stored in a bounded in-process cache (capped at 10,000 entries, FIFO eviction). Repeated identical queries return instantly without hitting the HNSW index.
 
 ## Running locally
 
@@ -74,7 +76,7 @@ Interactive docs at `http://localhost:8000/docs` once the server is running.
 pytest tests/ -v
 ```
 
-31 tests covering: data loading and cleaning, feature pipeline (shape, dtype, no NaN/inf), HNSW index behaviour, engine caching, API endpoints (200/404/422/503), and latency (cached query < 1ms, HNSW query < 50ms).
+30 tests covering: data loading and cleaning, feature pipeline (shape, dtype, no NaN/inf), HNSW index behaviour, engine caching, API endpoints (200/404/422/503), and latency (cached query < 1ms, HNSW query < 50ms).
 
 ## Architecture decisions
 
