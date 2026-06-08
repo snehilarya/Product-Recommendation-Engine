@@ -29,6 +29,11 @@ class TestDataLoader:
         assert df["brand"].isna().sum() == 0
         assert df["colour"].isna().sum() == 0
 
+    def test_weight_sentinel_cleaned(self, df):
+        # 999999999 sentinel must be converted to NaN — no real product weighs 1B grams
+        real_weights = df["weight"].dropna()
+        assert (real_weights >= 999999999).sum() == 0
+
     def test_bestsellers_rank_extracted(self, df):
         # 83% of products have a rank in product_details — spot-check it's numeric
         filled = df["bestsellers_rank"].dropna()
@@ -46,7 +51,7 @@ class TestFeatureBuilder:
     def test_output_shape_is_correct(self, df, built_features):
         from similarity.config import settings
         feature_matrix, builder = built_features
-        expected_dims = settings.SVD_COMPONENTS + 3  # text dims + price + rating + bsr
+        expected_dims = settings.SVD_COMPONENTS + 4  # text + price + rating + bsr + weight
         assert feature_matrix.shape == (len(df), expected_dims)
 
     def test_output_dtype_is_float32(self, df, built_features):

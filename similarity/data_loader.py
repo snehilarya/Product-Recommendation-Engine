@@ -50,6 +50,7 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
 
     df["sales_price"] = df["sales_price"].apply(_parse_price)
     df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
+    df["weight"] = df["weight"].apply(_parse_weight)
     df["bestsellers_rank"] = df["product_details__k_v_pairs"].apply(_extract_rank)
     df["child_category"] = df["parent___child_category__all"].apply(_extract_child_category)
 
@@ -61,19 +62,20 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df[col] = ""
 
-    # Remove near-duplicate SKUs: same product name + brand + price is almost
-    # certainly the same physical item listed multiple times. Keeping duplicates
-    # means the top-N results can be filled with identical products.
+    # Remove near-duplicate SKUs: same product name + price + brand (when brand is
+    # known) is almost certainly the same item listed by multiple sellers.
+    # We require brand to be non-empty before including it in the key — two products
+    # with null brand, same name, and same price may be genuinely different items.
     before_dedup = len(df)
     df["_dedup_key"] = (
         df["product_name"].str.lower().str.strip() + "|" +
-        df["brand"].str.lower().str.strip() + "|" +
-        df["sales_price"].astype(str)
+        df["sales_price"].astype(str) + "|" +
+        df["brand"].apply(lambda b: b.lower().strip() if b else "__unknown__" + str(id(b)))
     )
     df = df.drop_duplicates(subset=["_dedup_key"]).drop(columns=["_dedup_key"])
     removed = before_dedup - len(df)
     if removed:
-        logger.info(f"Removed {removed} near-duplicate SKUs (same name+brand+price)")
+        logger.info(f"Removed {removed} near-duplicate SKUs (same name+price+brand)")
 
     after = len(df)
     logger.info(f"Clean complete: {before} → {after} products")
@@ -87,6 +89,22 @@ def _parse_price(value) -> Optional[float]:
     try:
         return float(str(value).replace(",", "").strip())
     except ValueError:
+        return None
+
+
+def _parse_weight(value) -> Optional[float]:
+    """
+    Parse weight string like '86.2 g' to float. Returns None for the sentinel
+    value 999999999 the dataset uses to indicate unknown weight.
+    Only 21% of products have a real weight value; the rest are NaN after this.
+    """
+    if value is None:
+        return None
+    try:
+        numeric_part = str(value).split()[0].replace(",", "")
+        parsed = float(numeric_part)
+        return None if parsed >= 999999999 else parsed
+    except (ValueError, IndexError):
         return None
 
 

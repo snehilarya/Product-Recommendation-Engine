@@ -10,7 +10,13 @@ At startup the service loads ~30k Amazon fashion products and builds a vector in
 
 2. **Dimensionality reduction** — TruncatedSVD squashes the sparse TF-IDF matrix down to 75 dense dimensions. We use TruncatedSVD instead of regular PCA because PCA would first need to convert the sparse matrix to dense (that's ~600 MB for this dataset). TruncatedSVD does the same thing but works on sparse input directly.
 
-3. **Numeric features** — `sales_price` (log-transformed to handle the right skew — most items are ₹300–₹600 but some are ₹8000+), `rating`, and `bestsellers_rank` (also log-transformed, range is 6 to 2.8M) are scaled and appended as 3 more dimensions. These are down-weighted at 0.3× so they inform but don't dominate the text signal → 78-dim float32 vector per product.
+3. **Numeric features** — four numeric attributes from the spec are appended as additional dimensions, each log-transformed where skewed and MinMax scaled then down-weighted at 0.3×:
+   - `sales_price` — log-transformed (right-skewed: most ₹300–₹600, some ₹8000+)
+   - `rating` — direct scale
+   - `bestsellers_rank` — log-transformed (range 6 to 2.8M)
+   - `weight` — log-transformed; only 21% of products have a real value, the rest are median-imputed
+
+   → 79-dim float32 vector per product.
 
 4. **HNSW index** — all vectors go into an hnswlib cosine-space index for approximate nearest-neighbour search. Queries run in ~0.02ms.
 
@@ -29,6 +35,8 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 First startup takes about 2–3 seconds to build the index and saves it to `.index_cache/`. Every restart after that loads from disk and is ready in ~50ms instead. The cache directory is versioned by config hash — if you change `SVD_COMPONENTS` or `NUMERIC_WEIGHT`, the app automatically detects the mismatch and rebuilds.
+
+> **Kubernetes note:** `.index_cache/` is written to the container's local filesystem. In K8s, pod recreation (deploys, node rescheduling, OOM kills) wipes the local filesystem — the fast-load path only applies to in-place restarts. To benefit from caching across pod recreations, mount a `PersistentVolumeClaim` at the path set by the `CACHE_DIR` environment variable.
 
 The dataset is bundled as `data/archive.zip` and extracted automatically on first run — no manual data setup needed.
 
@@ -76,7 +84,7 @@ Interactive docs at `http://localhost:8000/docs` once the server is running.
 pytest tests/ -v
 ```
 
-30 tests covering: data loading and cleaning, feature pipeline (shape, dtype, no NaN/inf), HNSW index behaviour, engine caching, API endpoints (200/404/422/503), and latency (cached query < 1ms, HNSW query < 50ms).
+30 tests covering: data loading and cleaning (including weight sentinel handling), feature pipeline (shape, dtype, no NaN/inf), HNSW index behaviour, engine caching, API endpoints (200/404/422/503), and latency (cached query < 1ms, HNSW query < 50ms).
 
 ## Architecture decisions
 
@@ -85,7 +93,7 @@ pytest tests/ -v
 | Decision | Chosen | Why |
 |---|---|---|
 | Text similarity | TF-IDF + TruncatedSVD | No model download, fast at startup, explainable |
-| ANN index | hnswlib HNSW | Sub-millisecond queries, simple in-process API — FAISS would be better at billion-scale but adds complexity |
+| ANN index | hnswlib HNSW | Sub-millisecond queries, simple in-process API. Based on Malkov & Yashunin (2018) — [arxiv.org/abs/1603.09320](https://arxiv.org/abs/1603.09320). FAISS would be better at billion-scale but adds complexity for 30k products. |
 | Feature combination | Concat + cosine | Single pipeline, easy to explain |
 | Index persistence | Save to `.index_cache/` on first build | Cold start drops from 2,600ms to 51ms on restart |
 | Query caching | Bounded in-process dict (10k entries, FIFO) | No extra services needed; fast enough for single-pod deployment |

@@ -31,7 +31,8 @@ def _config_hash() -> str:
     cache is in a different directory and a fresh build is triggered automatically.
     """
     key = (
-        f"svd={settings.SVD_COMPONENTS}"
+        f"v={settings.FEATURE_VERSION}"
+        f"_svd={settings.SVD_COMPONENTS}"
         f"_w={settings.NUMERIC_WEIGHT}"
         f"_M={settings.HNSW_M}"
         f"_ef={settings.HNSW_EF_CONSTRUCTION}"

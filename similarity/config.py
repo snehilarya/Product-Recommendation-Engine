@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # NUMERIC_WEIGHT scales [price, rating] dims relative to L2-normed text dims.
     # 0.3 gives same-category hit rate of 80.2% vs 75.3% at w=1.0 (measured).
     NUMERIC_WEIGHT: float = 0.3
+    # Increment when the feature schema changes (e.g. adding/removing a feature
+    # column) to force a cache rebuild even if other numeric params are unchanged.
+    FEATURE_VERSION: int = 2
     HNSW_M: int = 16
     HNSW_EF_CONSTRUCTION: int = 200
     HNSW_EF_QUERY: int = 50

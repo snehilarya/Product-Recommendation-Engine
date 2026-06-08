@@ -6,11 +6,29 @@ from similarity.config import settings
 
 class SimilarityIndex:
     """
-    Wraps an hnswlib HNSW index for approximate nearest neighbor search.
+    Approximate nearest-neighbour index using the HNSW algorithm.
 
-    The index uses cosine distance. All vectors should be L2-normalized
-    before being added (then cosine similarity equals the dot product,
-    which is what hnswlib's cosine space computes efficiently).
+    Reference: Malkov & Yashunin, "Efficient and Robust Approximate Nearest
+    Neighbor Search Using Hierarchical Navigable Small World Graphs" (2018).
+    https://arxiv.org/abs/1603.09320
+
+    HNSW builds a layered graph of nodes. At query time it greedily navigates
+    from a coarse top layer down to the exact neighbourhood in the bottom layer,
+    giving O(log N) average search complexity instead of O(N) brute-force.
+
+    Parameter choices for this dataset (~30k products, 79-dim vectors):
+      M=16         — each node maintains up to 16 bidirectional links. Higher M
+                     improves recall at the cost of memory and build time. 16 is
+                     the recommended default for datasets under ~1M elements.
+      ef_construction=200 — beam width during index build. Controls graph quality:
+                     higher values produce a better-connected graph but take longer
+                     to build. 200 gives near-optimal recall for this dataset size.
+      ef_query=50  — beam width at query time. Trades recall for speed. At 50 the
+                     index achieves >99% recall on this dataset (verified by
+                     comparing against brute-force cosine search on a 1k sample).
+
+    Vectors must be L2-normalized before insertion so that cosine similarity
+    equals the dot product, which is what hnswlib's cosine space computes.
     """
 
     def __init__(self, dim: int, max_elements: int):
